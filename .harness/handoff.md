@@ -1,54 +1,52 @@
 # Harness Handoff
 
-_Last updated: 2026-08-13T13:25:00+08:00_
+_Last updated: 2026-08-13T18:56:00+07:00_
 
 ## Goal
 
-构建 CC-Gate — Tauri 2 + Vue 3 桌面应用，统一管理 10 AI Agent 的模型/路由/Key/Shell。开源在 https://github.com/gongminami-pixel/cc-gate。当前 0.1.19 发布：deepseek-v4-pro 原生 Responses 支持 + 版本号显示修复。
+构建 CC-Gate — Tauri 2 + Vue 3 桌面应用，统一管理 10 AI Agent 的模型/路由/Key/Shell。开源在 https://github.com/gongminami/cc-gate（已迁至 gongminami org）。当前 0.1.20 已发布：Gemini 直连支持 + 双端构建 + 旧版本 release 清理。
 
 ## Context you must load
 
-- `CLAUDE.md` (project root) + `DESIGN.md` (project root)
-- `AGENTS.md` (project root)
-- `.harness/handoff.md` (this file)
-- `.harness/decisions.md` (latest 10 entries)
-- `.harness/waypoints/` (latest)
+- `CLAUDE.md` / `AGENTS.md`（项目根，如存在）
+- `src-tauri/src/types.rs` — builtin_models()（内置模型表，含 gemini-3-flash-preview / gemini-2.5-pro）、all_api_key_names()（key 槽位表）
+- `src-tauri/src/config_writer.rs` — PROVIDER_META（直连 provider 表）、write_providers（providers.json 生成）、short()（别名映射）
+- `src-tauri/src/model_catalog.rs` — CATALOG_URL（远端模型目录，已指向 gongminami/cc-gate）
+- `scripts/release.sh` — 发版脚本（gh auth token + gongminami/cc-gate）
 
 ## State snapshot
 
-- **Branch**: `main` @ `53fc5d1`（同步前 HEAD）
-- **Uncommitted**: `types.rs`、`config_writer.rs`、`tauri.conf.json`、`Cargo.toml`、`Sidebar.vue`、`PageStartup.vue`、`scripts/release.sh`、`.harness/`
-- **Version**: 0.1.19（tauri.conf.json + Cargo.toml 已同步）
-- **macOS DMG**: `CC-Gate_0.1.19_x64.dmg` SHA256 `a8a875bfc1396e96a38025e51cfb2f4913a561c9040a9ce6d3b0e03ee6ff4ebf`
-- **Windows exe**: `CC-Gate_0.1.19_x64-setup.exe` SHA256 `67be4d552f8d3f433df664d91e46405608262b2eaff8b3981cd970befcb36d3e`
+- branch: main @ `6ec47d5`（工作区干净，已全部 push）
+- 0.1.20 已发布：https://github.com/gongminami/cc-gate/releases/tag/v0.1.20
+- 旧版本 release（v0.1.0 ~ v0.1.19）已全部删除，Release 页只留 0.1.20（双包：dmg + nsis exe）
+- 仓库已从 gongminami-pixel/cc-gate 迁移至 gongminami/cc-gate（org），git remote 已更新
 
-## What works / what's broken
+## What works
 
-- ✅ deepseek-v4-pro 原生 Responses API（curl /v1/responses + codex exec 直连均验证通过）
-- ✅ cargo check 0 errors / cargo test 8 passed
-- ✅ 双端构建 0.1.19 完成（含版本号修复）
-- ✅ Sidebar 左下角版本号动态读取（getAppVersion），不再硬编码 v0.1.0
-- ⚠️ mimo2codex(8688) 仍保留 —— GLM/Qwen/MiMo 无 Responses 接口，经 Codex 时仍需翻译
+- **Gemini 直连**：PROVIDER_META 新增 gemini（base_url=https://generativelanguage.googleapis.com/v1beta/openai，无 /v1），builtin 2 个模型（native_responses=false 走代理），中转站预设，providerLabel；cargo test 9 passed（含 gemini_provider_meta_models_and_aliases），npm run build 通过
+- **双端构建 0.1.20**：macOS dmg（SHA 795261b9...）+ Windows nsis exe（SHA 492ba7e9...，VM 构建）
+- **发布链路**：gh auth login 后 OAuth token（gho_）可用；release.sh 已改 TOKEN=$(gh auth token ...)
+- **GitHub 清理**：17 个旧 assets + 13 个旧 release 全部删除，仅剩 v0.1.20
+
+## What's broken
+
+- 无已知代码卡点
+- keychain 的旧 fine-grained PAT 对 cc-gate 仓库无权限（API 404），勿再当主凭据
 
 ## Next actions
 
-1. commit 所有改动 + `git push` 推送到 origin/main
-2. `bash scripts/release.sh` 发布 v0.1.19
+1. （可选）学生机器实测 Gemini 流程：填 GEMINI_API_KEY → 模型列表选 gemini → 验证 Claude Code/Codex/Hermes 三通道
+2. （可选）cc-gate 远端 models-catalog.json 补 gemini 模型条目（需编辑仓库根目录文件 + push）
+3. （可选）发布脚本/产物测试：跑一次 `bash scripts/release.sh` 验证幂等（release 已存在分支）
 
 ## Open questions
 
 - 无
 
-## Key Decisions (latest)
-
-- deepseek-v4-pro 设 native_responses=true（2026-08-13 实测原生支持 Responses API）
-- mimo2codex 不删 —— GLM/Qwen/MiMo 仍走 8688（GLM /responses 实测 404）
-- Sidebar 版本号硬编码 v0.1.0 → 动态 getAppVersion()；Cargo.toml version 同步 0.1.19（消除与 tauri.conf.json 脱节）
-- 启动项 mimo2codex 说明文字修正为「仅非原生模型」
-
 ## Beware
 
-- 开源项目 — 同步提交后必须 `git push` 推送到 origin/main
-- 双端构建：Windows 包在 Mac Parallels VM 里用 `cmd /c` 构建，绝不在 Mac 上跑 cargo-xwin
-- macOS tauri build 后台跑会卡在文件锁（cargo 被孤立），前台跑才稳；Windows 后台 SSH 构建同样会孤立（rustc 继续在 VM 上编译，需轮询 tasklist 等完成）
-- 版本号三处：tauri.conf.json（bundle 命名 + package_info.version，UI getAppVersion 读它）、Cargo.toml（crate version）、package.json（前端 npm 版本，与 app 显示无关）
+- 仓库 URL：一律用 `gongminami/cc-gate`；旧 `gongminami-pixel` 路径 API 返回 301/404，git 端跟随重定向但 API 端要 -L 或 gh CLI
+- 发版前先 push 代码再跑 release.sh（tag 自动指向新 commit）
+- Windows VM 构建：SSH 会话会回收子进程（npm install 被连坐杀死），必须用 `schtasks`/Task Scheduler 启动构建，日志写 VM 本地文件轮询
+- 删除旧 release 时保留了 git tag（gh release delete 默认不删 tag）；用户要求彻底删 tag 需显式 --cleanup-tag
+- waypoints 已 20 个（>20 提醒归档）

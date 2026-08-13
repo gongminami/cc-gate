@@ -432,3 +432,9 @@ _Append-only. Newest at bottom. ISO8601 timestamps only._
 - **action**: 落 waypoint + 重写 handoff（0.1.19 状态：双端构建完成、SHA256 已算、待 commit+push+release）
 - **outcome**: L2 反映 0.1.19 发布前状态
 - **next**: git 提交 + push + bash scripts/release.sh
+
+## 2026-08-13T18:56:00+07:00 — handoff_ready: 0.1.20 发布后同步
+- **touched**: .harness/waypoints/2026-08-13T18-56-02+0700.md .harness/handoff.md .harness/progress.md
+- **action**: 落 waypoint + 重写 handoff（0.1.20 状态：Gemini 直连 + 双端构建 + 发布 + 仓库迁移 gongminami org + 旧 release 全清）
+- **outcome**: L2 反映 0.1.20 发布后状态
+- **next**: git 本地提交 .harness/
