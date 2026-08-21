@@ -763,7 +763,11 @@ const server = http.createServer(async (req, res) => {
       // ── OpenAI Chat Completions translation ──
       const openaiReq = anthropicToOpenAI(anthropicReq);
       openaiReq.model = provider.defaultModel;
-      const upstreamUrl = `${provider.baseUrl}/chat/completions`;
+      // Some relay configs store the FULL endpoint path (e.g. https://…/v1/chat/completions),
+      // but this proxy appends "/chat/completions" itself. Strip any existing suffix to
+      // avoid a doubled path, which relays answer with "404 page not found".
+      const base = String(provider.baseUrl || '').replace(/\/+$/, '');
+      const upstreamUrl = base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
       console.error(`→ ${modelId} → ${provider.displayName} (translate: ${upstreamUrl})${anthropicReq.stream ? ' [stream]' : ''}`);
       try {
         if (anthropicReq.stream) {

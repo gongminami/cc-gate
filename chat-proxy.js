@@ -279,7 +279,11 @@ const server = http.createServer(async (req, res) => {
     const upstreamBody = { ...chatReq };
     upstreamBody.model = provider.defaultModel;
 
-    const upstreamUrl = `${provider.baseUrl}/chat/completions`;
+    // Some relay configs store the FULL endpoint path (e.g. https://…/v1/chat/completions),
+    // but this proxy appends "/chat/completions" itself. Strip any existing suffix to
+    // avoid a doubled path, which relays answer with "404 page not found".
+    const base = String(provider.baseUrl || '').replace(/\/+$/, '');
+    const upstreamUrl = base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
     const authHeaders = { 'Authorization': `Bearer ${provider.apiKey}` };
 
     const isStream = chatReq.stream === true;

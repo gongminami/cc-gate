@@ -105,6 +105,19 @@ pub fn relay_env_key(relay_name: &str) -> String {
     format!("RELAY_{stem}_API_KEY")
 }
 
+/// Relay URLs are sometimes configured with the FULL OpenAI endpoint path
+/// (e.g. `https://…/v1/chat/completions`), but every local proxy (claude-proxy,
+/// chat-proxy, mimo2codex) appends `/chat/completions` itself when forwarding.
+/// Normalize to the base URL so a doubled path can't produce `404 page not found`
+/// upstream (observed with deepseek-v4-flash → 商汤日日新 relay, 2026-08).
+fn normalize_relay_base_url(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches('/');
+    trimmed
+        .strip_suffix("/chat/completions")
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
 pub fn write_providers(cfg: &AppConfig) -> Result<()> {
     // Collect enabled model slugs from all agents that write_providers
     let enabled_slugs: BTreeSet<String> = agent_list().iter()
@@ -154,10 +167,12 @@ pub fn write_providers(cfg: &AppConfig) -> Result<()> {
             let env_key = relay_env_key(relay_name);
             // If relay has an anthropic_url and the provider is anthropic, use that URL
             // for native protocol passthrough (no translation). Otherwise use the OpenAI URL.
+            // Either way, normalize away a trailing /chat/completions so the proxies'
+            // own suffix append can't produce a doubled path (see normalize_relay_base_url).
             let url = if provider_id == "anthropic" {
-                relay.anthropic_url.clone().unwrap_or_else(|| relay.url.clone())
+                normalize_relay_base_url(&relay.anthropic_url.clone().unwrap_or_else(|| relay.url.clone()))
             } else {
-                relay.url.clone()
+                normalize_relay_base_url(&relay.url)
             };
             (url, env_key, format!(" via {}", relay_name))
         } else {
@@ -1126,6 +1141,28 @@ mod tests {
         assert_eq!(v.pointer("/provider/ccgate/name").and_then(|x| x.as_str()), Some("CC-Gate"));
         // Detection path: /provider/ccgate must be found for opencode.
         assert!(v.pointer("/provider/ccgate").is_some());
+    }
+
+    /// Relay base URLs that already carry the full OpenAI endpoint path must be
+    /// normalized (trailing /chat/completions stripped) so the local proxies'
+    /// own suffix append can't produce a doubled path → upstream 404.
+    #[test]
+    fn normalize_relay_base_url_strips_full_endpoint_path() {
+        use super::normalize_relay_base_url;
+        assert_eq!(
+            normalize_relay_base_url("https://token.sensenova.cn/v1/chat/completions"),
+            "https://token.sensenova.cn/v1"
+        );
+        assert_eq!(
+            normalize_relay_base_url("https://token.sensenova.cn/v1/chat/completions/"),
+            "https://token.sensenova.cn/v1"
+        );
+        // Base URL without the endpoint suffix must be left untouched.
+        assert_eq!(
+            normalize_relay_base_url("https://openrouter.ai/api/v1"),
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(normalize_relay_base_url("https://api.deepseek.com/v1/"), "https://api.deepseek.com/v1");
     }
 
     /// Full headless "Apply" regression: write ALL tool configs, then every agent
