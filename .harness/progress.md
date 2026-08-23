@@ -454,3 +454,9 @@ _Append-only. Newest at bottom. ISO8601 timestamps only._
 - **action**: 落 waypoint + 重写 handoff（0.1.21 别名体系 v2 状态）
 - **outcome**: L2 反映本轮全部工作
 - **next**: commit + push + 双端构建
+
+## 2026-08-23T14:10:25-0300 — work: 0.1.21 双端构建完成（未发布）
+- **touched**: src-tauri/target/release/bundle/dmg/CC-Gate_0.1.21_x64.dmg /tmp/CC-Gate_0.1.21_x64-setup.exe
+- **action**: git 提交 91ef0f7(feat)+e0db9cf(docs) 并 push；macOS 前台 tauri build dmg ✓；Windows VM schtasks 流程构建 nsis ✓（第一次失败：tar 漏 scripts 目录 include_str 报错，补传后增量编译通过）
+- **outcome**: dmg SHA256=24231c05...c1befef (3.9MB)；exe SHA256=a4a580bc...f60676 (2.9MB, 12 chunks 校验一致)
+- **next**: 发布与否待用户（release.sh）；装包测试别名页/B方案/PI provider
