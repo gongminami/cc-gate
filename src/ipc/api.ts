@@ -29,6 +29,13 @@ export async function addAlias(cfg: AppConfig, name: string, tool: string, model
 export async function updateAlias(cfg: AppConfig, oldName: string, name: string, tool: string, model: string, source: string): Promise<AppConfig> { return invoke<AppConfig>("update_alias", { cfg, oldName, name, tool, model, source }); }
 export async function deleteAlias(cfg: AppConfig, name: string): Promise<AppConfig> { return invoke<AppConfig>("delete_alias", { cfg, name }); }
 
+// Custom model CRUD (模型管理页)
+import type { ModelDef } from "../types/models";
+export async function addCustomModel(cfg: AppConfig, model: ModelDef): Promise<AppConfig> { return invoke<AppConfig>("add_custom_model", { cfg, model }); }
+export async function updateCustomModel(cfg: AppConfig, oldSlug: string, model: ModelDef): Promise<AppConfig> { return invoke<AppConfig>("update_custom_model", { cfg, oldSlug, model }); }
+export async function deleteCustomModel(cfg: AppConfig, slug: string): Promise<AppConfig> { return invoke<AppConfig>("delete_custom_model", { cfg, slug }); }
+export async function knownProviders(): Promise<string[]> { return invoke<string[]>("known_providers"); }
+
 // Proxy
 export async function getProxyStatus(): Promise<ProxyStatus[]> { return invoke<ProxyStatus[]>("get_proxy_status"); }
 export async function startProxy(name: string): Promise<ProxyStatus> { return invoke<ProxyStatus>("start_proxy", { name }); }

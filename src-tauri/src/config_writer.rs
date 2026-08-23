@@ -40,6 +40,11 @@ fn meta_by_id(id: &str) -> Option<&'static ProviderMeta> {
     PROVIDER_META.iter().find(|m| m.id == id)
 }
 
+/// Provider ids that have a known direct endpoint (usable for custom models).
+pub fn known_provider_ids() -> Vec<&'static str> {
+    PROVIDER_META.iter().map(|m| m.id).collect()
+}
+
 /// Pick the best env key name — the one that actually exists in .env wins.
 /// If the primary key or any alias is present in .env, use that name.
 /// Otherwise default to the primary key (so the user knows what to create).

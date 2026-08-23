@@ -146,6 +146,88 @@ pub fn delete_alias(mut cfg: AppConfig, name: String) -> Result<AppConfig> {
     Ok(cfg)
 }
 
+// ── Custom model CRUD (模型管理页) ──────────────────────────
+
+fn validate_custom_model(cfg: &AppConfig, model: &crate::types::ModelDef, ignore_self: Option<&str>) -> Result<()> {
+    use crate::config_writer::known_provider_ids;
+    let slug = model.slug.trim();
+    if slug.is_empty() || slug.len() > 64 {
+        return Err(AppError::Config("slug 长度需在 1~64 之间".into()));
+    }
+    if !slug.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false)
+        || !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.' || c == '_') {
+        return Err(AppError::Config("slug 只能小写字母开头，含小写字母/数字/-/./_".into()));
+    }
+    if cfg.models.iter().any(|m| m.slug == slug && Some(m.slug.as_str()) != ignore_self) {
+        return Err(AppError::Config(format!("模型 '{slug}' 已存在")));
+    }
+    if !known_provider_ids().contains(&model.provider.as_str()) {
+        return Err(AppError::Config(format!(
+            "未知厂商 '{}'——自定义模型的厂商必须支持直连端点（可选: {}）",
+            model.provider,
+            known_provider_ids().join(", ")
+        )));
+    }
+    if model.context_window == 0 || model.max_output_tokens == 0 {
+        return Err(AppError::Config("上下文窗口和最大输出必须大于 0".into()));
+    }
+    Ok(())
+}
+
+fn is_builtin_slug(slug: &str) -> bool {
+    crate::types::builtin_models().iter().any(|m| m.slug == slug)
+}
+
+#[tauri::command]
+pub fn add_custom_model(mut cfg: AppConfig, mut model: crate::types::ModelDef) -> Result<AppConfig> {
+    model.slug = model.slug.trim().to_string();
+    validate_custom_model(&cfg, &model, None)?;
+    model.enabled = true;
+    cfg.models.push(model.clone());
+    // Route direct by default so the new model is usable immediately
+    cfg.model_routing.insert(model.slug.clone(), "direct".into());
+    config_store::save(&cfg)?;
+    config_writer::write_all_tool_configs(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+pub fn update_custom_model(mut cfg: AppConfig, old_slug: String, mut model: crate::types::ModelDef) -> Result<AppConfig> {
+    model.slug = model.slug.trim().to_string();
+    validate_custom_model(&cfg, &model, Some(old_slug.as_str()))?;
+    let Some(m) = cfg.models.iter_mut().find(|m| m.slug == old_slug) else {
+        return Err(AppError::Config(format!("模型不存在: {old_slug}")));
+    };
+    *m = model;
+    config_store::save(&cfg)?;
+    config_writer::write_all_tool_configs(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+pub fn delete_custom_model(mut cfg: AppConfig, slug: String) -> Result<AppConfig> {
+    if is_builtin_slug(&slug) {
+        return Err(AppError::Config("内置模型不可删除（可在首页取消勾选停用）".into()));
+    }
+    if !cfg.models.iter().any(|m| m.slug == slug) {
+        return Err(AppError::Config(format!("模型不存在: {slug}")));
+    }
+    cfg.models.retain(|m| m.slug != slug);
+    cfg.model_routing.remove(&slug);
+    for v in cfg.agent_models.values_mut() {
+        v.retain(|s| s != &slug);
+    }
+    cfg.custom_aliases.retain(|a| a.model != slug);
+    config_store::save(&cfg)?;
+    config_writer::write_all_tool_configs(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+pub fn known_providers() -> Vec<&'static str> {
+    crate::config_writer::known_provider_ids()
+}
+
 // ── Legacy / proxy ─────────────────────────────────────────
 
 #[tauri::command] pub fn write_tool_configs(cfg: AppConfig) -> Result<String> {

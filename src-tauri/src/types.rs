@@ -175,6 +175,11 @@ pub fn builtin_models() -> Vec<ModelDef> {
         // Gemini 走官方 OpenAI 兼容端点(直连),native_responses=false → 一律经本地代理转 Chat Completions。
         ModelDef { slug: "gemini-3-flash-preview".into(), display_name: "Gemini 3 Flash Preview".into(), provider: "gemini".into(),     enabled: true,  context_window: 1_048_576, max_output_tokens: 65_536,  priority: 400, default_reasoning_level: "medium".into(), input_price_per_1k: 0.0005, output_price_per_1k: 0.003,  ..Default::default() },
         ModelDef { slug: "gemini-2.5-pro".into(),        display_name: "Gemini 2.5 Pro".into(),        provider: "gemini".into(),     enabled: true,  context_window: 1_048_576, max_output_tokens: 65_536,  priority: 401, default_reasoning_level: "high".into(),   input_price_per_1k: 0.00125,output_price_per_1k: 0.01,   ..Default::default() },
+        // 2026-08 catalog sync (v2): GLM-5.3 / Qwen3.7-Max / Qwen3.8-Max 正式版
+        // GLM-5.3 官方虽有 Responses 端点(open.bigmodel.cn/api/v1),仍走翻译代理保持一致行为。
+        ModelDef { slug: "glm-5.3".into(),               display_name: "GLM-5.3".into(),               provider: "glm".into(),        enabled: true,  context_window: 1_000_000, max_output_tokens: 65_536,  priority: 201, default_reasoning_level: "high".into(),   input_price_per_1k: 0.0011, output_price_per_1k: 0.0039, ..Default::default() },
+        ModelDef { slug: "qwen3.7-max".into(),           display_name: "Qwen3.7 Max".into(),           provider: "qwen".into(),       enabled: true,  context_window: 262_144,   max_output_tokens: 65_536,  priority: 302, default_reasoning_level: "high".into(),   input_price_per_1k: 0.0017, output_price_per_1k: 0.005,  ..Default::default() },
+        ModelDef { slug: "qwen3.8-max".into(),           display_name: "Qwen3.8 Max".into(),           provider: "qwen".into(),       enabled: true,  context_window: 262_144,   max_output_tokens: 65_536,  priority: 303, default_reasoning_level: "high".into(),   input_price_per_1k: 0.0013, output_price_per_1k: 0.0052, ..Default::default() },
     ]
 }
 

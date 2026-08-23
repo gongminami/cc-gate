@@ -106,7 +106,7 @@ async function onDeleteAlias(name: string) {
 }
 
 async function onCopyName(name: string) {
-  try { await copyToClipboard(name); toast.ok(`已复制「${name}」— 打开终端粘贴回车即用`); }
+  try { await copyToClipboard(name); toast.ok(`已复制「${name}」（区分大小写）— 新开终端粘贴回车即用；已开着的终端请先执行 source ~/.zshrc`); }
   catch (e: any) { toast.err(e?.message ?? String(e)); }
 }
 
@@ -130,7 +130,7 @@ const aliases = computed(() => {
           一条别名 = 工具 × 大模型 × 来源。添加后自动写入 shell 配置（macOS: ~/.zshrc / Windows: PowerShell $PROFILE），
           点「复制」拿到短名字，打开终端粘贴回车即以该组合启动。<strong>同一工具开多个窗口、各走各的源</strong>，互不影响首页的全局分配。
         </p>
-        <p class="desc dim">提示：添加前已开着的终端不认识新别名，新开一个终端即可；用量统计照常记录。</p>
+        <p class="desc dim">提示：别名区分大小写；添加前已开着的终端不认识新别名（执行 <code>source ~/.zshrc</code> 或新开终端即可）；用量统计照常记录。</p>
 
         <div v-if="aliases.length > 0" class="alias-list">
           <div v-for="a in aliases" :key="a.name" class="alias-row">
