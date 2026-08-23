@@ -460,3 +460,15 @@ _Append-only. Newest at bottom. ISO8601 timestamps only._
 - **action**: git 提交 91ef0f7(feat)+e0db9cf(docs) 并 push；macOS 前台 tauri build dmg ✓；Windows VM schtasks 流程构建 nsis ✓（第一次失败：tar 漏 scripts 目录 include_str 报错，补传后增量编译通过）
 - **outcome**: dmg SHA256=24231c05...c1befef (3.9MB)；exe SHA256=a4a580bc...f60676 (2.9MB, 12 chunks 校验一致)
 - **next**: 发布与否待用户（release.sh）；装包测试别名页/B方案/PI provider
+
+## 2026-08-23T17:57:30-0300 — work: 更新检查功能 + 别名默认大模型 + 菜单顺序（0.1.22→0.1.24）
+- **touched**: model_catalog.rs commands/config.rs lib.rs PageAliases.vue(新composable useAppUpdate.ts) App.vue Sidebar.vue PageHome.vue api.ts models.ts Cargo.toml package.json
+- **action**: ①check_app_update command（GitHub Releases latest API，draft/prerelease 跳过，version_greater 数值比较，UA=cc-gate/update-check 8s 超时）；②open_url command（mac open / win cmd start / linux xdg-open）；③useAppUpdate composable（module 级单例：info/checking/refresh/checkNow/dismiss，忽略版本存 localStorage ccgate.dismissedUpdate）；④App.vue 启动 2.5s 静默查；⑤Sidebar 版本号旁红点徽标；⑥PageHome 顶部更新提示条（去 GitHub 下载/忽略此版本）+「检查更新」手动按钮 + 模型按钮改名「模型目录更新」；⑦别名页大模型下拉自动补默认（watch(modelsFor, immediate)，修配置异步到达时空着）；⑧Sidebar 菜单顺序：模型管理移到别名下方
+- **outcome**: cargo check ✓（仅既有 2 warning）+ npm run build ✓；0.1.23/0.1.24 双端构建完成未发布；0.1.24 已装本机 /Applications（.bak-0.1.23 备份）；dmg SHA256=ad69d9ec…66c013，exe SHA256=8cd513ad…163aa8（12 chunks 校验一致）
+- **next**: git 本地提交（feat + docs(harness)，不 push）；发布待用户指令
+
+## 2026-08-23T17:57:30-0300 — handoff_ready: 0.1.24 双端构建后同步
+- **touched**: .harness/waypoints/2026-08-23T17-57-18-0300.md .harness/handoff.md .harness/progress.md
+- **action**: 落 waypoint + 重写 handoff（0.1.24 状态：更新检查 + 菜单顺序 + 别名默认模型）
+- **outcome**: L2 反映本轮全部工作
+- **next**: git 本地提交 .harness/ + 源码，不 push
