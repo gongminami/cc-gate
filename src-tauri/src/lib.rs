@@ -123,6 +123,8 @@ pub fn run() {
             commands::config::update_custom_model,
             commands::config::delete_custom_model,
             commands::config::known_providers,
+            commands::config::get_relay_presets,
+            commands::config::refresh_relay_presets,
             commands::config::write_tool_configs,
             commands::proxy::start_proxy,
             commands::proxy::stop_proxy,

@@ -228,6 +228,27 @@ pub fn known_providers() -> Vec<&'static str> {
     crate::config_writer::known_provider_ids()
 }
 
+// ── Relay presets (快速填入, cloud-managed) ──────────────────
+
+/// Cached presets for immediate display when the relay dialog opens.
+#[tauri::command]
+pub fn get_relay_presets() -> Vec<crate::model_catalog::RelayPreset> {
+    crate::model_catalog::read_relay_presets()
+}
+
+/// Silent refresh: fetch remote presets with a hard 3s budget. Never errors to
+/// the UI — on failure the caller just keeps showing what it already has.
+#[tauri::command]
+pub async fn refresh_relay_presets() -> Vec<crate::model_catalog::RelayPreset> {
+    match crate::model_catalog::fetch_relay_presets().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::info!("relay presets refresh skipped: {e}");
+            crate::model_catalog::read_relay_presets()
+        }
+    }
+}
+
 // ── Legacy / proxy ─────────────────────────────────────────
 
 #[tauri::command] pub fn write_tool_configs(cfg: AppConfig) -> Result<String> {

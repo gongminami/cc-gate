@@ -36,6 +36,11 @@ export async function updateCustomModel(cfg: AppConfig, oldSlug: string, model: 
 export async function deleteCustomModel(cfg: AppConfig, slug: string): Promise<AppConfig> { return invoke<AppConfig>("delete_custom_model", { cfg, slug }); }
 export async function knownProviders(): Promise<string[]> { return invoke<string[]>("known_providers"); }
 
+// Relay presets (快速填入, cloud-managed)
+export interface RelayPreset { name: string; url: string; anthropic_url?: string; }
+export async function getRelayPresets(): Promise<RelayPreset[]> { return invoke<RelayPreset[]>("get_relay_presets"); }
+export async function refreshRelayPresets(): Promise<RelayPreset[]> { return invoke<RelayPreset[]>("refresh_relay_presets"); }
+
 // Proxy
 export async function getProxyStatus(): Promise<ProxyStatus[]> { return invoke<ProxyStatus[]>("get_proxy_status"); }
 export async function startProxy(name: string): Promise<ProxyStatus> { return invoke<ProxyStatus>("start_proxy", { name }); }

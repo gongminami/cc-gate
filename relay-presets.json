@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "updated_at": "2026-08-23T00:00:00Z",
+  "presets": [
+    { "name": "OpenRouter",   "url": "https://openrouter.ai/api/v1" },
+    { "name": "Gemini",       "url": "https://generativelanguage.googleapis.com/v1beta/openai" },
+    { "name": "商汤日日新",     "url": "https://token.sensenova.cn/v1" }
+  ]
+}

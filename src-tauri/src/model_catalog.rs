@@ -127,3 +127,86 @@ pub struct CheckUpdateResult {
     /// ISO8601 timestamp from the remote catalog.
     pub updated_at: String,
 }
+
+// ── Relay presets (快速填入, cloud-managed) ──────────────────
+
+/// One "quick fill" preset for the relay-add dialog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayPreset {
+    pub name: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RelayPresetsFile {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub presets: Vec<RelayPreset>,
+}
+
+const RELAY_PRESETS_URL: &str =
+    "https://raw.githubusercontent.com/gongminami/cc-gate/main/relay-presets.json";
+
+/// Shown when no cache exists yet (fresh install + offline).
+fn builtin_relay_presets() -> Vec<RelayPreset> {
+    vec![
+        RelayPreset { name: "OpenRouter".into(), url: "https://openrouter.ai/api/v1".into(), anthropic_url: None },
+        RelayPreset { name: "Gemini".into(), url: "https://generativelanguage.googleapis.com/v1beta/openai".into(), anthropic_url: None },
+    ]
+}
+
+pub fn relay_presets_cache_path() -> PathBuf {
+    paths::mimo2codex_dir().join("relay-presets-cache.json")
+}
+
+/// Cached presets from the last successful fetch; falls back to built-ins.
+pub fn read_relay_presets() -> Vec<RelayPreset> {
+    let path = relay_presets_cache_path();
+    if path.exists() {
+        if let Ok(data) = fs::read_to_string(&path) {
+            if let Ok(v) = serde_json::from_str::<Vec<RelayPreset>>(&data) {
+                if !v.is_empty() { return v; }
+            }
+        }
+    }
+    builtin_relay_presets()
+}
+
+fn save_relay_presets_cache(presets: &[RelayPreset]) {
+    let path = relay_presets_cache_path();
+    if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
+    if let Ok(json) = serde_json::to_string_pretty(presets) {
+        let _ = fs::write(&path, json);
+    }
+}
+
+/// Fetch presets from GitHub. Caller enforces the timeout budget — the dialog
+/// shows cached presets immediately and silently refreshes when this returns.
+pub async fn fetch_relay_presets() -> Result<Vec<RelayPreset>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+    let resp = client
+        .get(RELAY_PRESETS_URL)
+        .send()
+        .await
+        .map_err(|e| format!("网络请求失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("服务器返回 {}", resp.status()));
+    }
+
+    let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let file: RelayPresetsFile = serde_json::from_str(&text)
+        .map_err(|e| format!("预设 JSON 解析失败: {e}"))?;
+    if file.presets.is_empty() {
+        return Err("远端预设为空".into());
+    }
+    save_relay_presets_cache(&file.presets);
+    Ok(file.presets)
+}

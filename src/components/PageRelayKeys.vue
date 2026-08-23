@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import type { AppConfig } from "../types/models";
-import { saveConfig, addRelay, updateRelay, deleteRelay } from "../ipc/api";
+import { saveConfig, addRelay, updateRelay, deleteRelay, getRelayPresets, refreshRelayPresets } from "../ipc/api";
+import type { RelayPreset } from "../ipc/api";
 import { useToast } from "../composables/useToast";
 import { useAppConfig } from "../composables/useAppConfig";
 
@@ -33,10 +34,15 @@ async function saveApiKeys() {
   catch (e: any) { toast.err(e?.message ?? String(e)); }
 }
 
-const relayPresets = [
-  { name: "OpenRouter",   url: "https://openrouter.ai/api/v1", anthropicUrl: "" },
-  { name: "Gemini",       url: "https://generativelanguage.googleapis.com/v1beta/openai", anthropicUrl: "" },
-];
+// 云端预设：打开弹窗时先秒显缓存，同时静默拉远端（3 秒上限，失败静默）
+const relayPresets = ref<RelayPreset[]>([]);
+
+async function loadPresets() {
+  try { relayPresets.value = await getRelayPresets(); } catch { /* keep current */ }
+  refreshRelayPresets().then(fresh => {
+    if (fresh.length > 0) relayPresets.value = fresh;
+  }).catch(() => { /* offline — cached list stays */ });
+}
 
 const editingRelay = ref<{ oldName: string; name: string; url: string; anthropicUrl: string; key: string; masked: boolean }>(
   { oldName: "", name: "", url: "", anthropicUrl: "", key: "", masked: true }
@@ -44,10 +50,10 @@ const editingRelay = ref<{ oldName: string; name: string; url: string; anthropic
 const relayBusy = ref(false);
 const showRelayModal = ref(false);
 
-function startNewRelay() { editingRelay.value = { oldName: "", name: "", url: "", anthropicUrl: "", key: "", masked: true }; showRelayModal.value = true; }
+function startNewRelay() { editingRelay.value = { oldName: "", name: "", url: "", anthropicUrl: "", key: "", masked: true }; showRelayModal.value = true; loadPresets(); }
 function startEditRelay(r: { name: string; url: string; anthropic_url?: string; key: string }) { editingRelay.value = { oldName: r.name, name: r.name, url: r.url, anthropicUrl: r.anthropic_url ?? "", key: r.key, masked: true }; showRelayModal.value = true; }
 function cancelRelay() { editingRelay.value = { oldName: "", name: "", url: "", anthropicUrl: "", key: "", masked: true }; showRelayModal.value = false; }
-function pickPreset(p: { name: string; url: string; anthropicUrl: string }) { editingRelay.value.name = p.name; editingRelay.value.url = p.url; editingRelay.value.anthropicUrl = p.anthropicUrl; }
+function pickPreset(p: RelayPreset) { editingRelay.value.name = p.name; editingRelay.value.url = p.url; editingRelay.value.anthropicUrl = p.anthropic_url ?? ""; }
 
 async function onSaveRelay() {
   if (!props.config) return;
