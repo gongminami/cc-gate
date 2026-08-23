@@ -220,6 +220,227 @@ pub fn write_providers(cfg: &AppConfig) -> Result<()> {
     write_if_changed(&paths::providers_json(), &content)
 }
 
+// ── Custom aliases (别名页) ──────────────────────────────────
+
+/// Validate a user-supplied alias name.
+/// Rules: 2–32 chars, first char a letter, then [A-Za-z0-9_-]; must not collide
+/// with any built-in generated alias ("claude"/"codex"/"aider" and their
+/// per-model variants) nor another custom alias. `ignore_self` lets update keep
+/// its own name.
+pub fn validate_alias_name(name: &str, cfg: &AppConfig, ignore_self: Option<&str>) -> std::result::Result<(), String> {
+    if name.len() < 2 || name.len() > 32 {
+        return Err(format!("别名长度需在 2~32 之间（当前 {}）", name.len()));
+    }
+    let mut cs = name.chars();
+    let first = cs.next().unwrap();
+    if !first.is_ascii_alphabetic() {
+        return Err("别名必须以字母开头".into());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err("别名只能包含字母、数字、下划线、中划线".into());
+    }
+
+    let mut reserved: std::collections::HashSet<String> =
+        ["claude", "codex", "aider"].iter().map(|s| s.to_string()).collect();
+    for m in crate::types::builtin_models() {
+        for prefix in ["claude", "codex", "aider"] {
+            reserved.insert(format!("{}-{}", prefix, short(&m.slug)));
+        }
+    }
+    for a in &cfg.custom_aliases {
+        if Some(a.name.as_str()) == ignore_self { continue; }
+        reserved.insert(a.name.clone());
+    }
+    if reserved.contains(name) {
+        return Err(format!("别名「{name}」与已有命令冲突，换一个"));
+    }
+    Ok(())
+}
+
+/// Resolve one alias into a proxy route entry. Returns None for combos that
+/// don't go through the local proxies (claude_cli×anthropic-direct → native
+/// line; codex_cli → direct injection), or whose source can't be resolved.
+/// Pure so tests can run without touching the filesystem.
+fn build_one_route(a: &crate::types::CustomAlias, cfg: &AppConfig) -> Option<serde_json::Value> {
+    let model = cfg.models.iter().find(|m| m.slug == a.model)?;
+    let relay_by_name = |n: &str| cfg.relays.iter().find(|r| r.name == n);
+
+    // Models usable through this alias's source. The proxies honor any requested
+    // model in this set and fall back to the alias's own model otherwise — that's
+    // what makes /model switching work inside an alias window (方案B).
+    // direct → only models of that provider (other slugs would 404 at the vendor);
+    // relay → every enabled model (relays forward anything they carry).
+    let enabled: Vec<&ModelDef> = cfg.models.iter().filter(|m| m.enabled).collect();
+    let source_models: Vec<&str> = if a.source == "direct" {
+        enabled.iter().filter(|m| m.provider == model.provider).map(|m| m.slug.as_str()).collect()
+    } else {
+        enabled.iter().map(|m| m.slug.as_str()).collect()
+    };
+
+    let (base_url, env_key, anthropic_native) = match (a.tool.as_str(), a.source.as_str()) {
+        // Claude Code and pi both speak Anthropic protocol through claude-proxy.
+        // Direct to any provider with a known base URL goes through claude-proxy
+        // (translate), except Anthropic itself: claude_cli uses a pure native
+        // shell line and pi already supports the official endpoint natively —
+        // neither needs a proxy route.
+        ("claude_cli" | "pi", "direct") => {
+            if model.provider == "anthropic" { return None; }
+            let meta = meta_by_id(&model.provider)?;
+            (meta.base_url.to_string(), resolve_env_key(meta), false)
+        }
+        ("claude_cli" | "pi", s) if s.starts_with("relay:") => {
+            let relay = relay_by_name(&s[6..])?;
+            // If the relay offers a native Anthropic endpoint and the model is
+            // Anthropic-flavored, passthrough there; otherwise translate.
+            if model.provider == "anthropic" {
+                if let Some(au) = &relay.anthropic_url {
+                    (normalize_relay_base_url(au), relay_env_key(&relay.name), true)
+                } else {
+                    (normalize_relay_base_url(&relay.url), relay_env_key(&relay.name), false)
+                }
+            } else {
+                (normalize_relay_base_url(&relay.url), relay_env_key(&relay.name), false)
+            }
+        }
+        // Aider speaks OpenAI protocol — always proxied so every combo works and
+        // usage stays visible (direct providers resolve via PROVIDER_META).
+        ("aider", "direct") => {
+            let meta = meta_by_id(&model.provider)?;
+            (meta.base_url.to_string(), resolve_env_key(meta), false)
+        }
+        ("aider", s) if s.starts_with("relay:") => {
+            let relay = relay_by_name(&s[6..])?;
+            (normalize_relay_base_url(&relay.url), relay_env_key(&relay.name), false)
+        }
+        // Codex CLI aliases inject the upstream directly on the command line —
+        // never proxied, so no route entry.
+        _ => return None,
+    };
+
+    Some(serde_json::json!({
+        "name": a.name,
+        "tool": a.tool,
+        "token": format!("ccgate-{}", a.name),
+        "model": a.model,
+        // Models the proxies may honor for this token (方案B: /model switching
+        // inside an alias window); anything else falls back to `model`.
+        "models": source_models,
+        "baseUrl": base_url,
+        "envKey": env_key,
+        "anthropicEndpoint": anthropic_native,
+    }))
+}
+
+/// Pure builder for ~/.mimo2codex/aliases.json content (testable).
+pub fn build_alias_routes(cfg: &AppConfig) -> Vec<serde_json::Value> {
+    cfg.custom_aliases.iter()
+        .filter_map(|a| build_one_route(a, cfg))
+        .collect()
+}
+
+/// Write the alias routing table consumed by claude-proxy.js / chat-proxy.js.
+pub fn write_alias_routes(cfg: &AppConfig) -> Result<()> {
+    let content = serde_json::to_string_pretty(&serde_json::json!({ "aliases": build_alias_routes(cfg) }))?;
+    write_if_changed(&paths::aliases_json(), &content)
+}
+
+// ── pi coding agent (~/.pi/agent/models.json) ────────────────
+
+/// Merge CC-Gate providers into pi's models.json. Two layers:
+/// ① `ccgate` — homepage-assigned pi models via chat-proxy (source = global routing);
+/// ② `ccgate-<alias>` — one provider per custom alias, speaking anthropic-messages
+///    through claude-proxy with the alias's ccgate token, so a pi window can pin a
+///    specific source while /model-switching across that source's models.
+/// The file hot-reloads on every /model open; user-defined providers are preserved.
+/// A malformed existing file aborts the write instead of wiping it.
+/// Pure merger: inject CC-Gate providers into an existing models.json document.
+/// Returns Err(reason) when the doc shape is unusable (caller must not overwrite).
+fn merge_pi_models(
+    mut doc: serde_json::Value,
+    cfg: &AppConfig,
+) -> std::result::Result<serde_json::Value, String> {
+    if !doc.is_object() {
+        return Err("顶层必须是 JSON 对象".into());
+    }
+    let obj = doc.as_object_mut().unwrap();
+    if !obj.contains_key("providers") {
+        obj.insert("providers".into(), serde_json::json!({}));
+    }
+    let Some(providers) = obj.get_mut("providers").and_then(|p| p.as_object_mut()) else {
+        return Err("providers 必须是对象".into());
+    };
+
+    // ① Base provider from the homepage matrix
+    let pi_slugs = cfg.agent_models.get(&crate::types::agent_id_key(&crate::types::AgentId::Pi))
+        .cloned().unwrap_or_default();
+    let base_models: Vec<serde_json::Value> = pi_slugs.iter()
+        .filter_map(|s| cfg.models.iter().find(|m| &m.slug == s && m.enabled))
+        .map(|m| serde_json::json!({
+            "id": m.slug,
+            "name": m.display_name,
+            "reasoning": true,
+            "contextWindow": m.context_window,
+            "maxTokens": m.max_output_tokens,
+        }))
+        .collect();
+    if base_models.is_empty() {
+        providers.remove("ccgate");
+    } else {
+        let port = cfg.proxy_ports.chat_proxy;
+        providers.insert("ccgate".into(), serde_json::json!({
+            "baseUrl": format!("http://127.0.0.1:{port}/v1"),
+            "api": "openai-completions",
+            "apiKey": "cc-gate-local",
+            "name": "CC-Gate",
+            "models": base_models,
+        }));
+    }
+
+    // ② Per-alias providers (进阶层): token-pinned sources for pi windows
+    let claude_port = cfg.proxy_ports.claude_proxy;
+    for route in build_alias_routes(cfg) {
+        let name = route["name"].as_str().unwrap_or_default().to_string();
+        let token = format!("ccgate-{name}");
+        let models: Vec<serde_json::Value> = route["models"].as_array()
+            .map(|arr| arr.iter().filter_map(|m| m.as_str()).map(|slug| {
+                let display = cfg.models.iter().find(|m| m.slug == slug)
+                    .map(|m| m.display_name.clone()).unwrap_or_else(|| slug.to_string());
+                serde_json::json!({ "id": slug, "name": display, "reasoning": true })
+            }).collect())
+            .unwrap_or_default();
+        if models.is_empty() { continue; }
+        providers.insert(format!("ccgate-{name}"), serde_json::json!({
+            "baseUrl": format!("http://127.0.0.1:{claude_port}"),
+            "api": "anthropic-messages",
+            "name": format!("CC-Gate · {name}"),
+            "headers": { "x-api-key": token },
+            "models": models,
+        }));
+    }
+
+    Ok(doc)
+}
+
+pub fn write_pi_models(cfg: &AppConfig) -> Result<()> {
+    let path = paths::pi_models_json();
+    let doc: serde_json::Value = if path.exists() {
+        let src = fs::read_to_string(&path).unwrap_or_default();
+        match serde_json::from_str(&src) {
+            Ok(v) => v,
+            Err(_) => return Err(crate::error::AppError::Config(format!(
+                "{} 解析失败——请先修复或删除该文件再应用", path.display()))),
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    let merged = merge_pi_models(doc, cfg).map_err(crate::error::AppError::Config)?;
+
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
+    let content = serde_json::to_string_pretty(&merged)? + "\n";
+    write_if_changed(&path, &content)
+}
+
 // ── .env relay keys ─────────────────────────────────────────
 
 pub fn write_env_relay_keys(cfg: &AppConfig) -> Result<()> {
@@ -620,6 +841,20 @@ fn gen_aliases_impl(cfg: &AppConfig, out: &mut String, powershell: bool) {
             }
         }
     }
+
+    // ── Custom aliases (别名页) ─────────────────────────────
+    // User-defined tool × model × source shortcuts. Token `ccgate-<name>` lets
+    // the local proxies pick a per-window upstream, so two terminals can run
+    // the same tool+model via different sources simultaneously.
+    for a in &cfg.custom_aliases {
+        let line = match a.tool.as_str() {
+            "claude_cli" => custom_claude_line(a, cfg, powershell),
+            "codex_cli"  => custom_codex_line(a, cfg, powershell),
+            "aider"      => custom_aider_line(a, cfg, powershell),
+            _ => continue,
+        };
+        out.push_str(&line);
+    }
 }
 
 pub fn remove_shell_aliases() -> Result<()> {
@@ -709,6 +944,7 @@ pub fn write_all_tool_configs(cfg: &AppConfig) -> Result<()> {
     write_providers(cfg)?;
     write_user_api_keys(cfg)?;
     write_shell_aliases(cfg)?;
+    write_alias_routes(cfg)?;
     clean_stale_bat_files();
 
 /// Delete old .bat / .cmd launcher files that may shadow CC-Gate's shell aliases.
@@ -737,6 +973,7 @@ fn clean_stale_bat_files() {
     write_hermes_config(cfg)?;
     write_openclaw_config(cfg)?;
     write_opencode_config(cfg)?;
+    write_pi_models(cfg)?;
     tracing::info!("All tool configs written");
     Ok(())
 }
@@ -981,6 +1218,98 @@ fn codex_alias_line_proxy(aname: &str, m: &ModelDef, port: u16, powershell: bool
 fn claude_alias(s: &str) -> String { format!("claude-{}", short(s)) }
 fn aider_alias(s: &str) -> String { format!("aider-{}", short(s)) }
 
+// ── Custom alias line builders (别名页) ──────────────────────
+
+/// Claude Code: native Anthropic-direct → pure native line (no proxy);
+/// everything else → claude-proxy with token ccgate-<name> so the proxy
+/// resolves the upstream per-window.
+fn custom_claude_line(a: &crate::types::CustomAlias, cfg: &AppConfig, powershell: bool) -> String {
+    let cm = format!("claude-{}", a.model);
+    let provider = cfg.models.iter().find(|m| m.slug == a.model).map(|m| m.provider.as_str());
+
+    if a.source == "direct" && provider == Some("anthropic") {
+        // Same shape as the bare `claude` alias — user's own login/key.
+        if powershell {
+            return format!(
+                "function {name} {{ $env:ANTHROPIC_BASE_URL='https://api.anthropic.com'; & (Get-Command claude -CommandType Application) --dangerously-skip-permissions --permission-mode bypassPermissions $args }}\n",
+                name = a.name
+            );
+        }
+        return format!(
+            "alias {name}='ANTHROPIC_BASE_URL=\"https://api.anthropic.com\" \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n",
+            name = a.name
+        );
+    }
+
+    let port = cfg.proxy_ports.claude_proxy;
+    let token = format!("ccgate-{}", a.name);
+    if powershell {
+        format!(
+            "function {name} {{ $env:ANTHROPIC_BASE_URL='http://127.0.0.1:{port}'; $env:ANTHROPIC_AUTH_TOKEN='{token}'; $env:ANTHROPIC_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_OPUS_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_SONNET_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_HAIKU_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_FABLE_MODEL='{cm}'; $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY='1'; claude --dangerously-skip-permissions --permission-mode bypassPermissions }}\n",
+            name = a.name, port = port, token = token, cm = cm,
+        )
+    } else {
+        format!(
+            "alias {name}='ANTHROPIC_BASE_URL=\"http://127.0.0.1:{port}\" \\\n  ANTHROPIC_AUTH_TOKEN={token} \\\n  ANTHROPIC_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_OPUS_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_SONNET_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_HAIKU_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_FABLE_MODEL=\"{cm}\" \\\n  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \\\n  \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n",
+            name = a.name, port = port, token = token, cm = cm,
+        )
+    }
+}
+
+/// Aider: always via chat-proxy with token ccgate-<name> — every model×source
+/// combo works and usage stays visible.
+fn custom_aider_line(a: &crate::types::CustomAlias, cfg: &AppConfig, powershell: bool) -> String {
+    let port = cfg.proxy_ports.chat_proxy;
+    let token = format!("ccgate-{}", a.name);
+    if powershell {
+        format!(
+            "function {name} {{ $env:OPENAI_API_BASE='http://127.0.0.1:{port}/v1'; $env:OPENAI_API_KEY='{token}'; aider --model openai/{model} }}\n",
+            name = a.name, port = port, token = token, model = a.model,
+        )
+    } else {
+        format!(
+            "alias {name}='OPENAI_API_BASE=http://127.0.0.1:{port}/v1 OPENAI_API_KEY={token} \\aider --model openai/{model}'\n",
+            name = a.name, port = port, token = token, model = a.model,
+        )
+    }
+}
+
+/// Codex CLI: injects the upstream directly on the command line (same pattern
+/// as codex-ds native aliases). direct → PROVIDER_META url + key from api_keys;
+/// relay:<n> → relay URL + embedded relay key.
+fn custom_codex_line(a: &crate::types::CustomAlias, cfg: &AppConfig, powershell: bool) -> String {
+    let m = cfg.models.iter().find(|m| m.slug == a.model);
+    let ctx = m.map(|m| m.context_window).unwrap_or(131_072);
+    let max = m.map(|m| m.max_output_tokens).unwrap_or(16_384);
+
+    let (base_url, api_key) = if let Some(relay_name) = a.source.strip_prefix("relay:") {
+        match cfg.relays.iter().find(|r| &r.name == relay_name) {
+            Some(r) => (normalize_relay_base_url(&r.url), r.key.clone()),
+            None => return String::new(), // stale relay — skip silently
+        }
+    } else {
+        match m.as_ref().and_then(|m| meta_by_id(&m.provider)) {
+            Some(meta) => (
+                meta.base_url.to_string(),
+                cfg.api_keys.get(meta.env_key).cloned().unwrap_or_else(|| "proxy".into()),
+            ),
+            None => return String::new(),
+        }
+    };
+
+    if powershell {
+        format!(
+            "function {name} {{ $env:OPENAI_API_KEY='{key}'; codex --dangerously-bypass-approvals-and-sandbox -c model_provider='custom' -c model='{slug}' -c base_url='{url}' -c model_context_window={ctx} -c model_max_output_tokens={max} }}\n",
+            name = a.name, key = api_key, slug = a.model, url = base_url, ctx = ctx, max = max,
+        )
+    } else {
+        format!(
+            "alias {name}='OPENAI_API_KEY={key} \\codex --dangerously-bypass-approvals-and-sandbox -c model_provider=\"custom\" -c model=\"{slug}\" -c base_url=\"{url}\" -c model_context_window={ctx} -c model_max_output_tokens={max}'\n",
+            name = a.name, key = api_key, slug = a.model, url = base_url, ctx = ctx, max = max,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::relay_env_key;
@@ -1185,3 +1514,179 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod custom_alias_tests {
+    use super::{build_alias_routes, gen_aliases_impl, validate_alias_name};
+    use crate::types::{AppConfig, CustomAlias, RelayConfig};
+
+    fn cfg_with_alias(tool: &str, model: &str, source: &str) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        // Trim the default all-agents-all-models noise so generated output is readable.
+        cfg.agent_models.clear();
+        cfg.custom_aliases = vec![CustomAlias {
+            name: "zz".into(), tool: tool.into(), model: model.into(), source: source.into(),
+        }];
+        cfg
+    }
+
+    #[test]
+    fn claude_proxied_line_carries_token() {
+        // deepseek-v4-flash direct (non-anthropic) → claude-proxy + ccgate token
+        let cfg = cfg_with_alias("claude_cli", "deepseek-v4-flash", "direct");
+        let mut out = String::new();
+        gen_aliases_impl(&cfg, &mut out, false);
+        assert!(out.contains("alias zz='ANTHROPIC_BASE_URL=\"http://127.0.0.1:8689\""), "{out}");
+        assert!(out.contains("ANTHROPIC_AUTH_TOKEN=ccgate-zz"), "{out}");
+        assert!(out.contains("ANTHROPIC_MODEL=\"claude-deepseek-v4-flash\""), "{out}");
+    }
+
+    #[test]
+    fn claude_anthropic_direct_is_native_line() {
+        let cfg = cfg_with_alias("claude_cli", "claude-opus-5", "direct");
+        let mut out = String::new();
+        gen_aliases_impl(&cfg, &mut out, false);
+        assert!(out.contains("alias zz='ANTHROPIC_BASE_URL=\"https://api.anthropic.com\""), "{out}");
+        assert!(!out.contains("ccgate-zz"), "native line must not carry a ccgate token:\n{out}");
+    }
+
+    #[test]
+    fn aider_line_uses_chat_proxy_and_token() {
+        let cfg = cfg_with_alias("aider", "glm-5.2", "direct");
+        let mut out = String::new();
+        gen_aliases_impl(&cfg, &mut out, false);
+        assert!(out.contains("OPENAI_API_BASE=http://127.0.0.1:8690/v1"), "{out}");
+        assert!(out.contains("OPENAI_API_KEY=ccgate-zz"), "{out}");
+        assert!(out.contains("--model openai/glm-5.2"), "{out}");
+    }
+
+    #[test]
+    fn codex_direct_injects_provider_url() {
+        let cfg = cfg_with_alias("codex_cli", "deepseek-v4-pro", "direct");
+        let mut out = String::new();
+        gen_aliases_impl(&cfg, &mut out, false);
+        assert!(out.contains("base_url=\"https://api.deepseek.com/v1\""), "{out}");
+        assert!(out.contains("-c model=\"deepseek-v4-pro\""), "{out}");
+        assert!(!out.contains("ccgate-zz"), "codex lines are direct-injected, no proxy token:\n{out}");
+    }
+
+    #[test]
+    fn codex_relay_injects_relay_url() {
+        let mut cfg = cfg_with_alias("codex_cli", "deepseek-v4-pro", "relay:商汤");
+        cfg.relays.push(RelayConfig {
+            name: "商汤".into(), url: "https://relay.example.com/v1/chat/completions".into(),
+            anthropic_url: None, key: "sk-relay-test".into(),
+        });
+        let mut out = String::new();
+        gen_aliases_impl(&cfg, &mut out, false);
+        // Full endpoint path must be normalized away
+        assert!(out.contains("base_url=\"https://relay.example.com/v1\""), "{out}");
+        assert!(out.contains("OPENAI_API_KEY=sk-relay-test"), "{out}");
+    }
+
+    #[test]
+    fn routes_only_for_proxied_combos() {
+        let mut cfg = AppConfig::default();
+        cfg.relays.push(RelayConfig {
+            name: "r1".into(), url: "https://r1.example.com/v1/".into(),
+            anthropic_url: Some("https://r1.example.com/anthropic".into()), key: "k1".into(),
+        });
+        cfg.custom_aliases = vec![
+            CustomAlias { name: "ca".into(), tool: "claude_cli".into(), model: "deepseek-v4-flash".into(), source: "direct".into() },
+            CustomAlias { name: "cb".into(), tool: "claude_cli".into(), model: "claude-opus-5".into(),  source: "relay:r1".into() },
+            CustomAlias { name: "cc".into(), tool: "aider".into(),      model: "glm-5.2".into(),         source: "relay:r1".into(), },
+            CustomAlias { name: "cd".into(), tool: "codex_cli".into(),  model: "deepseek-v4-pro".into(), source: "direct".into() },
+            CustomAlias { name: "ce".into(), tool: "claude_cli".into(), model: "claude-opus-5".into(),   source: "direct".into(), },
+        ];
+        let routes = build_alias_routes(&cfg);
+        let names: Vec<&str> = routes.iter().filter_map(|r| r["name"].as_str()).collect();
+        // ca proxied ✓; cb anthropic via relay anthropic_url → passthrough route ✓;
+        // cc aider relay ✓; cd codex → none; ce anthropic-direct native → none
+        assert_eq!(names, vec!["ca", "cb", "cc"], "routes: {routes:?}");
+
+        let cb = routes.iter().find(|r| r["name"] == "cb").unwrap();
+        assert_eq!(cb["baseUrl"], "https://r1.example.com/anthropic");
+        assert_eq!(cb["anthropicEndpoint"], serde_json::json!(true));
+        assert_eq!(cb["token"], "ccgate-cb");
+
+        let ca = routes.iter().find(|r| r["name"] == "ca").unwrap();
+        assert_eq!(ca["envKey"], "DEEPSEEK_API_KEY");
+        assert_eq!(ca["anthropicEndpoint"], serde_json::json!(false));
+        // 方案B: direct source → only that provider's models are honored
+        let ca_models = ca["models"].as_array().unwrap();
+        assert!(ca_models.iter().all(|m| m.as_str().unwrap().starts_with("deepseek-")), "{ca_models:?}");
+        // relay source → every enabled model is honored
+        let cc = routes.iter().find(|r| r["name"] == "cc").unwrap();
+        assert!(!cc["models"].as_array().unwrap().is_empty());
+        assert_eq!(cc["baseUrl"], "https://r1.example.com/v1"); // trailing slash normalized
+        assert_eq!(cc["envKey"], super::relay_env_key("r1"));
+    }
+
+    #[test]
+    fn alias_name_validation() {
+        let cfg = AppConfig::default();
+        assert!(validate_alias_name("dsf", &cfg, None).is_ok());
+        assert!(validate_alias_name("A-b_2", &cfg, None).is_ok());
+        // builtin collisions
+        assert!(validate_alias_name("claude", &cfg, None).is_err());
+        assert!(validate_alias_name("claude-ds", &cfg, None).is_err());
+        assert!(validate_alias_name("codex-glm", &cfg, None).is_err());
+        // shape rules
+        assert!(validate_alias_name("2fast", &cfg, None).is_err());
+        assert!(validate_alias_name("a", &cfg, None).is_err());
+        assert!(validate_alias_name("has space", &cfg, None).is_err());
+        // uniqueness among customs, with ignore_self for updates
+        let mut cfg2 = AppConfig::default();
+        cfg2.custom_aliases.push(CustomAlias { name: "taken".into(), tool: "aider".into(), model: "glm-5.2".into(), source: "direct".into() });
+        assert!(validate_alias_name("taken", &cfg2, None).is_err());
+        assert!(validate_alias_name("taken", &cfg2, Some("taken")).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tier_pi_tests {
+    use super::merge_pi_models;
+    use crate::types::{AppConfig, CustomAlias};
+
+    #[test]
+    fn pi_merge_preserves_user_providers_and_adds_layers() {
+        let mut cfg = AppConfig::default();
+        cfg.agent_models.clear();
+        cfg.agent_models.insert("pi".into(), vec!["deepseek-v4-flash".into()]);
+        cfg.relays.push(crate::types::RelayConfig {
+            name: "r1".into(), url: "https://r1.example.com/v1".into(),
+            anthropic_url: None, key: "k".into(),
+        });
+        cfg.custom_aliases = vec![CustomAlias {
+            name: "dsf".into(), tool: "pi".into(),
+            model: "deepseek-v4-flash".into(), source: "relay:r1".into(),
+        }];
+
+        let user_doc = serde_json::json!({
+            "providers": { "my-ollama": { "baseUrl": "http://localhost:11434/v1" } },
+            "otherKey": true
+        });
+        let merged = merge_pi_models(user_doc, &cfg).expect("merge ok");
+
+        // user content preserved
+        assert!(merged["otherKey"].as_bool().unwrap());
+        assert!(merged.pointer("/providers/my-ollama/baseUrl").is_some());
+
+        // ① base ccgate provider with homepage-assigned models
+        let base = merged.pointer("/providers/ccgate").expect("base provider");
+        assert_eq!(base["api"], "openai-completions");
+        let ids: Vec<&str> = base["models"].as_array().unwrap()
+            .iter().map(|m| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["deepseek-v4-flash"]);
+
+        // ② per-alias provider speaks anthropic-messages via :8689 with token header
+        let al = merged.pointer("/providers/ccgate-dsf").expect("alias provider");
+        assert_eq!(al["api"], "anthropic-messages");
+        assert_eq!(al["baseUrl"], "http://127.0.0.1:8689");
+        assert_eq!(al["headers"]["x-api-key"], "ccgate-dsf");
+
+        // invalid docs are rejected so a broken file never gets wiped
+        assert!(merge_pi_models(serde_json::json!("oops"), &cfg).is_err());
+        assert!(merge_pi_models(serde_json::json!({"providers": []}), &cfg).is_err());
+    }
+}

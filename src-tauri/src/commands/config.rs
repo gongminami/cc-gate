@@ -83,6 +83,69 @@ pub fn delete_relay(mut cfg: AppConfig, name: String) -> Result<AppConfig> {
     Ok(cfg)
 }
 
+// ── Custom alias CRUD (别名页) ──────────────────────────────
+
+fn persist_aliases(cfg: &AppConfig) -> Result<()> {
+    config_writer::write_shell_aliases(cfg)?;
+    config_writer::write_alias_routes(cfg)?;
+    config_writer::write_pi_models(cfg)?;
+    Ok(())
+}
+
+fn validate_alias_combo(cfg: &AppConfig, tool: &str, model: &str, source: &str) -> Result<()> {
+    const TOOLS: &[&str] = &["claude_cli", "codex_cli", "aider", "pi"];
+    if !TOOLS.contains(&tool) {
+        return Err(AppError::Config(format!("不支持的工具类型: {tool}")));
+    }
+    if !cfg.models.iter().any(|m| m.slug == model && m.enabled) {
+        return Err(AppError::Config(format!("未知或未启用的模型: {model}")));
+    }
+    if source == "direct" {
+        return Ok(());
+    }
+    let Some(relay_name) = source.strip_prefix("relay:") else {
+        return Err(AppError::Config(format!("无效来源: {source}")));
+    };
+    if !cfg.relays.iter().any(|r| r.name == relay_name) {
+        return Err(AppError::Config(format!("中转站不存在: {relay_name}")));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn add_alias(mut cfg: AppConfig, name: String, tool: String, model: String, source: String) -> Result<AppConfig> {
+    let name = name.trim().to_string();
+    config_writer::validate_alias_name(&name, &cfg, None).map_err(AppError::Config)?;
+    validate_alias_combo(&cfg, &tool, &model, &source)?;
+    let alias = crate::types::CustomAlias { name: name.clone(), tool: tool.clone(), model: model.clone(), source: source.clone() };
+    cfg.custom_aliases.push(alias);
+    config_store::save(&cfg)?;
+    persist_aliases(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+pub fn update_alias(mut cfg: AppConfig, old_name: String, name: String, tool: String, model: String, source: String) -> Result<AppConfig> {
+    let name = name.trim().to_string();
+    config_writer::validate_alias_name(&name, &cfg, Some(old_name.as_str())).map_err(AppError::Config)?;
+    validate_alias_combo(&cfg, &tool, &model, &source)?;
+    let Some(a) = cfg.custom_aliases.iter_mut().find(|a| a.name == old_name) else {
+        return Err(AppError::Config(format!("别名不存在: {old_name}")));
+    };
+    a.name = name.clone(); a.tool = tool; a.model = model; a.source = source;
+    config_store::save(&cfg)?;
+    persist_aliases(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+pub fn delete_alias(mut cfg: AppConfig, name: String) -> Result<AppConfig> {
+    cfg.custom_aliases.retain(|a| a.name != name);
+    config_store::save(&cfg)?;
+    persist_aliases(&cfg)?;
+    Ok(cfg)
+}
+
 // ── Legacy / proxy ─────────────────────────────────────────
 
 #[tauri::command] pub fn write_tool_configs(cfg: AppConfig) -> Result<String> {

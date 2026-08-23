@@ -16,6 +16,7 @@ pub enum AgentId {
     #[serde(rename = "aider")]        Aider,
     #[serde(rename = "cursor")]       Cursor,
     #[serde(rename = "reasonix")]     Reasonix,
+    #[serde(rename = "pi")]           Pi,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +43,8 @@ pub fn agent_list() -> Vec<AgentMeta> {
         AgentMeta { id: AgentId::OpenClaw,        name: "OpenClaw".into(),        agent_type: "cli".into(),     tool: "OpenClaw".into(),  proxy: "chat-proxy".into(),   writes_zshrc: false, writes_providers: true,  writes_catalog: false },
         AgentMeta { id: AgentId::Aider,           name: "Aider".into(),           agent_type: "cli".into(),     tool: "Aider".into(),     proxy: "chat-proxy".into(),   writes_zshrc: true,  writes_providers: true,  writes_catalog: false },
         AgentMeta { id: AgentId::Cursor,          name: "Cursor".into(),          agent_type: "cli".into(),     tool: "Cursor".into(),    proxy: "chat-proxy".into(),   writes_zshrc: false, writes_providers: true,  writes_catalog: false },
-        AgentMeta { id: AgentId::Reasonix,        name: "Codex Reasonix".into(),  agent_type: "cli".into(),     tool: "Codex".into(),     proxy: "mimo2codex".into(),   writes_zshrc: false, writes_providers: true,  writes_catalog: true },
+        AgentMeta { id: AgentId::Reasonix,       name: "Codex Reasonix".into(),  agent_type: "cli".into(),     tool: "Codex".into(),     proxy: "mimo2codex".into(),   writes_zshrc: false, writes_providers: true,  writes_catalog: true },
+        AgentMeta { id: AgentId::Pi,             name: "PI".into(),              agent_type: "cli".into(),     tool: "PI".into(),        proxy: "chat-proxy".into(),   writes_zshrc: false, writes_providers: false, writes_catalog: false },
     ]
 }
 
@@ -55,6 +57,21 @@ pub struct RelayConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_url: Option<String>,  // Anthropic-native URL (optional), e.g. https://api.relay.com/anthropic
     pub key: String,            // API key (saved to .env as RELAY_<name>_API_KEY)
+}
+
+// ── Custom alias (别名页) ────────────────────────────────────
+
+/// User-defined shortcut: tool × model × source.
+/// `source`: "direct" | "relay:<relay_name>" (same vocabulary as model_routing).
+/// Each alias becomes a shell alias whose token (`ccgate-<name>`) selects the
+/// upstream per-window, so two terminals can run the same tool+model via
+/// different sources simultaneously.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomAlias {
+    pub name: String,   // shell identifier, e.g. "dsf"
+    pub tool: String,   // "claude_cli" | "codex_cli" | "aider" | "pi"
+    pub model: String,  // model slug
+    pub source: String, // "direct" | "relay:<name>"
 }
 
 // ── App config ──────────────────────────────────────────────
@@ -75,6 +92,8 @@ pub struct AppConfig {
     pub api_keys: HashMap<String, String>,
     pub proxy_ports: ProxyPorts,
     #[serde(default)] pub model_catalog_version: u32,
+    /// User-defined aliases from the 别名 page (newest appended; UI shows reversed).
+    #[serde(default)] pub custom_aliases: Vec<CustomAlias>,
     #[serde(default = "default_true")] pub autostart_mimo2codex: bool,
     #[serde(default = "default_true")] pub autostart_claude_proxy: bool,
     #[serde(default = "default_true")] pub autostart_chat_proxy: bool,
@@ -99,6 +118,7 @@ impl Default for AppConfig {
             version: 3, models: builtin_models(), agent_models, relays: vec![],
             model_routing, api_keys: HashMap::new(), proxy_ports: ProxyPorts::default(),
             model_catalog_version: 0,
+            custom_aliases: vec![],
             autostart_mimo2codex: true, autostart_claude_proxy: true, autostart_chat_proxy: true,
             autostart_app: false,
         }

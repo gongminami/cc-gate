@@ -8,6 +8,7 @@ import PageModels from "./components/PageModels.vue";
 import PageShell from "./components/PageShell.vue";
 import PageUsage from "./components/PageUsage.vue";
 import PageRelayKeys from "./components/PageRelayKeys.vue";
+import PageAliases from "./components/PageAliases.vue";
 import PageTools from "./components/PageTools.vue";
 import PageStartup from "./components/PageStartup.vue";
 import PageAppearance from "./components/PageAppearance.vue";
@@ -43,6 +44,7 @@ onMounted(async () => { await refresh(); });
         <PageShell     v-else-if="currentPage === 'shell'"    :config="config" />
         <PageUsage     v-else-if="currentPage === 'usage'" />
         <PageRelayKeys v-else-if="currentPage === 'relay'"    :config="config" />
+        <PageAliases   v-else-if="currentPage === 'aliases'"  :config="config" />
         <PageTools     v-else-if="currentPage === 'tools'" />
         <PageStartup   v-else-if="currentPage === 'startup'"  :config="config" />
         <PageAppearance v-else-if="currentPage === 'appearance'" />

@@ -82,6 +82,57 @@ const PROVIDERS = loadProviders(env);
 
 console.error(`[chat-proxy] Loaded ${Object.keys(PROVIDERS).length} models: ${Object.keys(PROVIDERS).join(', ')}`);
 
+// ── Custom alias routes (别名页, written by CC-Gate) ─────────
+// Bearer token `ccgate-<name>` → per-window upstream. Hot-reloaded via mtime
+// so the app can add/remove aliases without restarting this proxy.
+const ALIASES_FILE = path.join(HOME, '.mimo2codex', 'aliases.json');
+let aliasCache = { aliasesMtime: 0, envMtime: 0, map: new Map(), freshEnv: {} };
+
+function refreshAliases() {
+  try {
+    const am = fs.existsSync(ALIASES_FILE) ? fs.statSync(ALIASES_FILE).mtimeMs : 0;
+    const em = fs.existsSync(ENV_FILE) ? fs.statSync(ENV_FILE).mtimeMs : 0;
+    if (am === aliasCache.aliasesMtime && em === aliasCache.envMtime) return aliasCache;
+    const map = new Map();
+    if (am) {
+      const data = JSON.parse(fs.readFileSync(ALIASES_FILE, 'utf8'));
+      for (const a of (data.aliases || [])) map.set(a.token, a);
+    }
+    // Re-read .env so a just-saved relay/provider key is usable immediately.
+    let freshEnv = {};
+    if (em) {
+      fs.readFileSync(ENV_FILE, 'utf8').split('\n').forEach(line => {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) return;
+        const eq = t.indexOf('=');
+        if (eq <= 0) return;
+        freshEnv[t.slice(0, eq)] = t.slice(eq + 1).trim();
+      });
+    }
+    console.error(`[chat-proxy] [aliases] ${map.size} route(s) loaded`);
+    aliasCache = { aliasesMtime: am, envMtime: em, map, freshEnv };
+  } catch (e) {
+    console.error(`[chat-proxy] [aliases] reload failed: ${e.message}`);
+  }
+  return aliasCache;
+}
+
+// Returns the alias route for a `ccgate-*` bearer token, or null.
+function aliasFor(token) {
+  if (!token || !String(token).startsWith('ccgate-')) return null;
+  return refreshAliases().map.get(String(token)) || null;
+}
+
+function aliasToProvider(alias) {
+  const key = alias.envKey ? (refreshAliases().freshEnv[alias.envKey] || '') : '';
+  return {
+    baseUrl: alias.baseUrl,
+    apiKey: key,
+    defaultModel: alias.model,
+    displayName: `${alias.name} (alias)`,
+  };
+}
+
 // ── Usage recording ──��─────────────────────────────────────
 const USAGE_FILE = path.join(HOME, '.mimo2codex', 'usage.jsonl');
 
@@ -117,9 +168,16 @@ function recordUsage(modelId, usage, proxyName) {
 }
 
 // ── /v1/models — OpenAI-format model list ──��────────────────
-function handleModels(res) {
+function handleModels(res, token) {
   console.error(`← GET /v1/models`);
-  const models = Object.values(PROVIDERS).map(p => ({
+  // Alias windows only see models their source carries.
+  const alias = aliasFor(token);
+  let providers = Object.values(PROVIDERS);
+  if (alias) {
+    const allowed = new Set(Array.isArray(alias.models) ? alias.models : [alias.model]);
+    providers = providers.filter(p => allowed.has(p.defaultModel));
+  }
+  const models = providers.map(p => ({
     id: p.defaultModel,
     object: 'model',
     created: 1700000000,
@@ -231,7 +289,7 @@ const server = http.createServer(async (req, res) => {
 
   // ── GET /v1/models ─────────────────────────────────────
   if (req.method === 'GET' && req.url === '/v1/models') {
-    handleModels(res);
+    handleModels(res, (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim());
     return;
   }
 
@@ -262,7 +320,29 @@ const server = http.createServer(async (req, res) => {
     }
 
     const modelId = normalizeModel(chatReq.model);
-    const provider = PROVIDERS[modelId];
+
+    // ── Resolve provider ──
+    // Priority: custom alias bearer token (per-window upstream, 别名页) >
+    // providers.json model route. The alias must win or two windows couldn't
+    // run the same model via different sources.
+    const bearer = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
+    let provider;
+    if (bearer.startsWith('ccgate-')) {
+      const alias = aliasFor(bearer);
+      provider = alias ? aliasToProvider(alias) : null;
+      if (!provider) {
+        sendError(res, 400, `Unknown alias token: ${bearer}`);
+        return;
+      }
+      // 方案B: honor the requested model when this alias's source carries it,
+      // so /model switching works inside an alias window.
+      const allowed = Array.isArray(alias.models) ? alias.models : [];
+      if (allowed.includes(modelId)) {
+        provider.defaultModel = modelId;
+      }
+    } else {
+      provider = PROVIDERS[modelId];
+    }
 
     if (!provider) {
       const known = Object.keys(PROVIDERS).join(', ');

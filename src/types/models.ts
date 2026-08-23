@@ -12,6 +12,13 @@ export interface RelayConfig {
   key: string;
 }
 
+export interface CustomAlias {
+  name: string;   // shell identifier
+  tool: string;   // "claude_cli" | "codex_cli" | "aider" | "pi"
+  model: string;  // model slug
+  source: string; // "direct" | "relay:<name>"
+}
+
 export interface AppConfig {
   version: number; models: ModelDef[];
   agent_models: Record<AgentId, string[]>;
@@ -22,6 +29,7 @@ export interface AppConfig {
   api_keys: Record<string, string>;
   proxy_ports: ProxyPorts;
   model_catalog_version: number;
+  custom_aliases?: CustomAlias[];
   autostart_mimo2codex: boolean; autostart_claude_proxy: boolean; autostart_chat_proxy: boolean;
   autostart_app: boolean;
 }
@@ -30,6 +38,8 @@ export interface ModelDef {
   slug: string; display_name: string; provider: string; enabled: boolean;
   context_window: number; max_output_tokens: number; priority: number;
   default_reasoning_level: string; supports_reasoning_summaries: boolean;
+  /** Codex 直连需原生 Responses API（别名页联动过滤用） */
+  native_responses?: boolean;
   input_price_per_1k: number; output_price_per_1k: number;
 }
 

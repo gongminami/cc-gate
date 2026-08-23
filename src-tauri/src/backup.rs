@@ -83,6 +83,8 @@ fn agent_config_target(agent: &crate::types::AgentMeta) -> Option<(PathBuf, &'st
         OpenClaw => Some((paths::openclaw_config_json(), "openclaw_config.json")),
         OpenCode => Some((paths::opencode_config_path(), "opencode_config.jsonc")),
         Aider | Cursor => Some((paths::zshrc(), "zshrc")),
+        // pi 的 models.json 是合并式写入（只动自己的 provider 键），无需备份
+        Pi => None,
     }
 }
 
@@ -152,6 +154,14 @@ pub fn is_agent_proxied(agent: &crate::types::AgentMeta) -> bool {
             let path = paths::zshrc();
             if let Ok(content) = fs::read_to_string(&path) {
                 content.contains("# >>> CC-Gate aliases >>>")
+            } else { false }
+        }
+        Pi => {
+            let path = paths::pi_models_json();
+            if let Ok(content) = fs::read_to_string(&path) {
+                serde_json::from_str::<serde_json::Value>(&content)
+                    .map(|v| v.pointer("/providers/ccgate").is_some())
+                    .unwrap_or(false)
             } else { false }
         }
     }

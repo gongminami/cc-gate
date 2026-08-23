@@ -61,6 +61,19 @@ pub fn providers_json() -> PathBuf {
     mimo2codex_dir().join("providers.json")
 }
 
+/// Alias routing table for the local proxies: token `ccgate-<name>` → upstream.
+/// Written by config_writer::write_alias_routes, hot-reloaded by the JS proxies.
+pub fn aliases_json() -> PathBuf {
+    mimo2codex_dir().join("aliases.json")
+}
+
+/// pi coding agent's custom provider definitions (~/.pi/agent/models.json).
+/// CC-Gate merges a `ccgate` provider + per-alias `ccgate-<name>` providers
+/// into it, preserving everything the user defined themselves.
+pub fn pi_models_json() -> PathBuf {
+    home().join(".pi/agent/models.json")
+}
+
 pub fn mimo_env() -> PathBuf {
     mimo2codex_dir().join(".env")
 }

@@ -24,6 +24,11 @@ export async function addRelay(cfg: AppConfig, name: string, url: string, key: s
 export async function updateRelay(cfg: AppConfig, oldName: string, name: string, url: string, key: string, anthropicUrl?: string): Promise<AppConfig> { return invoke<AppConfig>("update_relay", { cfg, oldName, name, url, key, anthropicUrl }); }
 export async function deleteRelay(cfg: AppConfig, name: string): Promise<AppConfig> { return invoke<AppConfig>("delete_relay", { cfg, name }); }
 
+// Custom alias CRUD (别名页)
+export async function addAlias(cfg: AppConfig, name: string, tool: string, model: string, source: string): Promise<AppConfig> { return invoke<AppConfig>("add_alias", { cfg, name, tool, model, source }); }
+export async function updateAlias(cfg: AppConfig, oldName: string, name: string, tool: string, model: string, source: string): Promise<AppConfig> { return invoke<AppConfig>("update_alias", { cfg, oldName, name, tool, model, source }); }
+export async function deleteAlias(cfg: AppConfig, name: string): Promise<AppConfig> { return invoke<AppConfig>("delete_alias", { cfg, name }); }
+
 // Proxy
 export async function getProxyStatus(): Promise<ProxyStatus[]> { return invoke<ProxyStatus[]>("get_proxy_status"); }
 export async function startProxy(name: string): Promise<ProxyStatus> { return invoke<ProxyStatus>("start_proxy", { name }); }

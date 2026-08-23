@@ -86,6 +86,62 @@ const PROVIDERS = loadProviders(env);
 
 console.error(`Loaded ${Object.keys(PROVIDERS).length} providers: ${Object.keys(PROVIDERS).join(', ')}`);
 
+// ── Custom alias routes (别名页, written by CC-Gate) ─────────
+// Token `ccgate-<name>` → per-window upstream. Hot-reloaded via mtime so the
+// app can add/remove aliases without restarting this proxy.
+const ALIASES_FILE = path.join(HOME, '.mimo2codex', 'aliases.json');
+let aliasCache = { aliasesMtime: 0, envMtime: 0, map: new Map(), freshEnv: {} };
+
+function refreshAliases() {
+  try {
+    const am = fs.existsSync(ALIASES_FILE) ? fs.statSync(ALIASES_FILE).mtimeMs : 0;
+    const em = fs.existsSync(ENV_FILE) ? fs.statSync(ENV_FILE).mtimeMs : 0;
+    if (am === aliasCache.aliasesMtime && em === aliasCache.envMtime) return aliasCache;
+    const map = new Map();
+    if (am) {
+      const data = JSON.parse(fs.readFileSync(ALIASES_FILE, 'utf8'));
+      for (const a of (data.aliases || [])) map.set(a.token, a);
+    }
+    // Re-read .env so a just-saved relay/provider key is usable immediately
+    // without restarting the proxy (PROVIDERS keep their startup snapshot).
+    let freshEnv = {};
+    if (em) {
+      fs.readFileSync(ENV_FILE, 'utf8').split('\n').forEach(line => {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) return;
+        const eq = t.indexOf('=');
+        if (eq <= 0) return;
+        freshEnv[t.slice(0, eq)] = t.slice(eq + 1).trim();
+      });
+    }
+    console.error(`[aliases] ${map.size} route(s) loaded`);
+    aliasCache = { aliasesMtime: am, envMtime: em, map, freshEnv };
+  } catch (e) {
+    console.error(`[aliases] reload failed: ${e.message}`);
+  }
+  return aliasCache;
+}
+
+// Returns the alias route for a `ccgate-*` token, or null.
+function aliasFor(token) {
+  if (!token || !String(token).startsWith('ccgate-')) return null;
+  return refreshAliases().map.get(String(token)) || null;
+}
+
+function aliasToProvider(alias) {
+  const key = alias.envKey ? (refreshAliases().freshEnv[alias.envKey] || '') : '';
+  return {
+    baseUrl: alias.baseUrl,
+    apiKey: key,
+    defaultModel: alias.model,
+    displayName: `${alias.name} (alias)`,
+    anthropicEndpoint: !!alias.anthropicEndpoint,
+    anthropicModel: null,
+    anthropicVersion: null,
+    timeoutMs: null,
+  };
+}
+
 // Request timeouts. Callers may override per-provider via opts.timeout (providers.json timeoutMs).
 const TIMEOUT_UNARY = 120000;   // non-streaming request
 const TIMEOUT_STREAM = 300000;  // streaming request — first byte may lag on slow relays
@@ -581,9 +637,17 @@ function recordUsage(modelId, usage, proxyName) {
 }
 
 // ── /v1/models — gateway model discovery ────��───────────────
-function handleModels(res) {
+function handleModels(res, token) {
   console.error(`← GET /v1/models (gateway discovery)`);
-  const models = Object.values(PROVIDERS).map(p => ({
+  // Alias windows only see models their source carries — a /model list that
+  // offers unsupported names would just produce upstream errors.
+  const alias = aliasFor(token);
+  let providers = Object.values(PROVIDERS);
+  if (alias) {
+    const allowed = new Set(Array.isArray(alias.models) ? alias.models : [alias.model]);
+    providers = providers.filter(p => allowed.has(p.defaultModel));
+  }
+  const models = providers.map(p => ({
     id: 'claude-' + p.defaultModel,       // claude- prefix required by CC
     type: 'model',
     display_name: p.displayName,
@@ -600,7 +664,7 @@ const server = http.createServer(async (req, res) => {
   console.error(`${req.method} ${req.url}`);
   // Gateway model discovery
   if (req.method === 'GET' && req.url === '/v1/models') {
-    handleModels(res);
+    handleModels(res, (req.headers['x-api-key'] || (req.headers['authorization'] || '').replace('Bearer ', '')) || '');
     return;
   }
 
@@ -656,11 +720,32 @@ const server = http.createServer(async (req, res) => {
       realModelId = modelId.slice(7);
     }
 
-    // ── Resolve provider: providers.json first, token shorthand only as fallback ──
-    // Token routing (x-api-key: ds|qwen|glm|mimo) is a legacy shorthand. It must not
-    // outrank an explicitly requested model, or the model field is silently ignored.
-    const resolvedModel = PROVIDERS[realModelId] ? realModelId : (TOKEN_MAP[token] || realModelId);
-    const provider = PROVIDERS[resolvedModel];
+    // ── Resolve provider ──
+    // Priority: custom alias token (per-window upstream, 别名页) > providers.json
+    // model route > legacy token shorthand. Alias must win over everything or
+    // two windows couldn't run the same model via different sources.
+    const alias = aliasFor(token);
+    let resolvedModel;
+    let provider;
+    if (alias) {
+      provider = aliasToProvider(alias);
+      // 方案B: honor the requested model when this alias's source carries it,
+      // so /model switching works inside an alias window. Unknown names fall
+      // back to the alias's own model instead of erroring at an upstream that
+      // doesn't carry them.
+      const allowed = Array.isArray(alias.models) ? alias.models : [];
+      if (allowed.includes(realModelId) || realModelId === alias.model) {
+        provider.defaultModel = realModelId;
+      } else {
+        provider.defaultModel = alias.model;
+      }
+      resolvedModel = provider.defaultModel;
+    } else {
+      // Token routing (x-api-key: ds|qwen|glm|mimo) is a legacy shorthand. It must not
+      // outrank an explicitly requested model, or the model field is silently ignored.
+      resolvedModel = PROVIDERS[realModelId] ? realModelId : (TOKEN_MAP[token] || realModelId);
+      provider = PROVIDERS[resolvedModel];
+    }
 
     // ── Anthropic-native passthrough (built-in) — only when providers.json has no route ──
     // Claude's own models go directly to api.anthropic.com with the client's OAuth token.
