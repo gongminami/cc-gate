@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import type { AppConfig, ModelDef } from "../types/models";
 import { addCustomModel, updateCustomModel, deleteCustomModel, knownProviders, checkModelUpdates } from "../ipc/api";
 import { useToast } from "../composables/useToast";
@@ -33,6 +33,14 @@ const BUILTIN_SLUGS = new Set([
 function isBuiltin(slug: string): boolean { return BUILTIN_SLUGS.has(slug); }
 
 function fmtTokens(n: number): string { return n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n/1_000).toFixed(0)}K` : String(n); }
+
+// 同厂商聚在一起展示：provider 字典序分组，组内按 priority 再 slug
+function byProvider(a: ModelDef, b: ModelDef): number {
+  if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
+  if (a.priority !== b.priority) return a.priority - b.priority;
+  return a.slug.localeCompare(b.slug);
+}
+const sortedModels = computed(() => [...(props.config?.models ?? [])].sort(byProvider));
 
 // ── Modal ──────────────────────────────────────────────────
 
@@ -104,7 +112,7 @@ async function onCheckUpdates() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="m in config.models" :key="m.slug">
+            <tr v-for="m in sortedModels" :key="m.slug">
               <td class="provider-cell">{{ providerLabel(m.provider) }}</td>
               <td class="name-cell">{{ m.display_name }}<span v-if="!m.enabled" class="dim">（停用）</span></td>
               <td><code>{{ m.slug }}</code></td>

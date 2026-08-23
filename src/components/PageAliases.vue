@@ -26,6 +26,8 @@ const sources = computed(() => [
 ]);
 
 // 联动过滤：直连时只列协议上可行的组合；中转站可承载任意模型，列全部。
+// 联动过滤：直连时只列协议上可行的组合；中转站可承载任意模型，列全部。
+// 同厂商聚在一起：provider 分组 + priority 排序，避免新合并的模型散落列表。
 const modelsFor = computed(() => {
   const all = (props.config?.models ?? []).filter(m => m.enabled);
   const tool = form.value.tool;
@@ -39,6 +41,10 @@ const modelsFor = computed(() => {
     if (tool === "opencode")   return m.provider !== "anthropic";
     if (tool === "hermes")     return m.provider !== "anthropic";
     return true;
+  }).sort((a, b) => {
+    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.slug.localeCompare(b.slug);
   });
 });
 
