@@ -147,3 +147,15 @@ _Append-only. Each entry captures the "why" behind a choice._
 **Evidence**: src/components/Sidebar.vue:33 原硬编码 v0.1.0；App.vue 里 'settings' 页 = PageAbout
 **Supersedes**: 硬编码版本号
 **Impact**: 后续发版只需改 tauri.conf.json + Cargo.toml 两处，UI 自动显示
+
+## 2026-08-23T13:15:56-0300 — A 方案（haiku 分类器降级）实现后撤销，回归四槽位统一压平
+**Why**: 分类器(haiku档)调用都是几百 token 小请求，成本占比 <5%；DeepSeek flash/pro 单价差下每月仅省几毛钱，不敌弱模型伤后台任务质量、统计混名、跨源兼容边界三个真实代价。用户拍板"保险优先"
+**What**: haiku_slot_model/cheapest_claude_model 删除；CustomAlias.haiku_model、路由表 haikuModel 字段、JS 分支、前端下拉全链清除；别名语义定版 = "一条别名=完整一套（工具×模型×源，四槽位统一）"
+**Supersedes**: 2026-08-23 早间"haiku 槽位降级省钱"方案
+**Evidence**: config_writer.rs gen_aliases_impl claude 段 / custom_claude_line
+
+## 2026-08-23T13:15:56-0300 — 别名路由 B 方案 + PI 双层 provider 架构
+**Why**: 全局 providers.json 按模型名唯一路由 → 同模型多窗口必同源；PI 无 shell env 注入机制但有原生自定义 provider 体系（models.json 热重载、支持 anthropic-messages 协议）
+**What**: ①aliases.json 条目带 models 集（direct=该厂商集/relay=全部启用），代理 token 命中后尊重集内请求模型名否则回落绑定模型——/model 真切换且列表按 token 过滤；②pi: 基础层 ccgate(:8690 openai-completions 跟首页矩阵) + 进阶层每别名一个 ccgate-<名>(:8689 anthropic-messages + x-api-key token 头)；merge 保留用户 provider、坏文件拒写
+**Alternatives**: 每别名独立代理端口（端口爆炸弃）；纯 env 直连中转站（丢统计+协议翻译不通弃）
+**Evidence**: claude-proxy.js「方案B」块 / config_writer.rs build_alias_routes + merge_pi_models / github earendil-works/pi docs/models.md

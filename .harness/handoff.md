@@ -1,43 +1,44 @@
 # Harness Handoff
 
-_Last updated: 2026-08-13T18:56:00+07:00_
+_Last updated: 2026-08-23T13:15:00-03:00_
 
 ## Goal
 
-构建 CC-Gate — Tauri 2 + Vue 3 桌面应用，统一管理 10 AI Agent 的模型/路由/Key/Shell。开源在 https://github.com/gongminami/cc-gate（已迁至 gongminami org）。当前 0.1.20 已发布：Gemini 直连支持 + 双端构建 + 旧版本 release 清理。
+构建 CC-Gate — Tauri 2 + Vue 3 桌面应用，统一管理 10+ AI Agent 的模型/路由/Key/Shell。开源在 https://github.com/gongminami/cc-gate。当前 0.1.21 开发完成：别名体系 v2（B 方案 token 定源+切模、PI 工具接入双层 provider）+ A 方案（haiku 降级）经用户拍板撤销回归压平。待双端构建。
 
 ## Context you must load
 
-- `CLAUDE.md` / `AGENTS.md`（项目根，如存在）
-- `src-tauri/src/types.rs` — builtin_models()（内置模型表，含 gemini-3-flash-preview / gemini-2.5-pro）、all_api_key_names()（key 槽位表）
-- `src-tauri/src/config_writer.rs` — PROVIDER_META（直连 provider 表）、write_providers（providers.json 生成）、short()（别名映射）
-- `src-tauri/src/model_catalog.rs` — CATALOG_URL（远端模型目录，已指向 gongminami/cc-gate）
-- `scripts/release.sh` — 发版脚本（gh auth token + gongminami/cc-gate）
+- `CLAUDE.md` / `AGENTS.md`（项目根）
+- `src-tauri/src/config_writer.rs` — build_alias_routes（别名路由表）/ merge_pi_models + write_pi_models（PI models.json 双层 provider）/ gen_aliases_impl（shell 别名行，含自定义段）
+- `src-tauri/src/types.rs` — CustomAlias{name,tool,model,source} / AgentId::Pi
+- `claude-proxy.js` / `chat-proxy.js` — 「方案B」注释块：aliasFor token 反查 + 尊重请求模型名；handleModels 按 token 过滤
+- `src/components/PageAliases.vue` — 别名页 UI（modal 表单/列表/复制短名字）
 
 ## State snapshot
 
-- branch: main @ `6ec47d5`（工作区干净，已全部 push）
-- 0.1.20 已发布：https://github.com/gongminami/cc-gate/releases/tag/v0.1.20
-- 旧版本 release（v0.1.0 ~ v0.1.19）已全部删除，Release 页只留 0.1.20（双包：dmg + nsis exe）
-- 仓库已从 gongminami-pixel/cc-gate 迁移至 gongminami/cc-gate（org），git remote 已更新
+- branch: main @ 提交前工作区（本轮改动未提交 → 本次 sync 后立即提交+push）
+- 版本 0.1.21（Cargo.toml 单一来源 + package.json 已 bump）
+- 改动文件：config_writer/types/commands/lib/paths/backup + 两代理 js + 前端 6 文件 + PageAliases.vue 新增
+- PI 本机已装（~/.pi/agent/models.json 将在下次 Apply 时被合并写入 ccgate providers）
 
 ## What works
 
-- **Gemini 直连**：PROVIDER_META 新增 gemini（base_url=https://generativelanguage.googleapis.com/v1beta/openai，无 /v1），builtin 2 个模型（native_responses=false 走代理），中转站预设，providerLabel；cargo test 9 passed（含 gemini_provider_meta_models_and_aliases），npm run build 通过
-- **双端构建 0.1.20**：macOS dmg（SHA 795261b9...）+ Windows nsis exe（SHA 492ba7e9...，VM 构建）
-- **发布链路**：gh auth login 后 OAuth token（gho_）可用；release.sh 已改 TOKEN=$(gh auth token ...)
-- **GitHub 清理**：17 个旧 assets + 13 个旧 release 全部删除，仅剩 v0.1.20
+- **B**：aliases.json 条目带 `models` 集（direct=该厂商模型集 / relay=全部启用模型）；代理 token 命中后请求模型名在集内则照传，否则回落 alias.model；/v1/models 按 token 过滤 → 别名窗口 /model 真切换
+- **别名页**：添加/修改/删除即时生效（rc 重写 + 路由表热加载不重启代理）；复制按钮只复制短名字
+- **PI 接入**：首页矩阵新增 PI 行；write_pi_models 合并写 ~/.pi/agent/models.json——基础层 ccgate(:8690 openai-completions) + 进阶层每别名一个 ccgate-<名>(:8689 anthropic-messages + x-api-key token 头)；保留用户自定义 provider；坏文件拒写
+- **原生保护**：裸 claude 纯官方直连（单测锁死）；CC-Gate 注入全在独立别名/区块内
+- cargo test 18 passed / node --check ✓ / npm run build ✓
 
 ## What's broken
 
 - 无已知代码卡点
-- keychain 的旧 fine-grained PAT 对 cc-gate 仓库无权限（API 404），勿再当主凭据
+- keychain 旧 fine-grained PAT 对仓库无权限（用 gh auth token）
 
 ## Next actions
 
-1. （可选）学生机器实测 Gemini 流程：填 GEMINI_API_KEY → 模型列表选 gemini → 验证 Claude Code/Codex/Hermes 三通道
-2. （可选）cc-gate 远端 models-catalog.json 补 gemini 模型条目（需编辑仓库根目录文件 + push）
-3. （可选）发布脚本/产物测试：跑一次 `bash scripts/release.sh` 验证幂等（release 已存在分支）
+1. （本次同步后立即做）git 提交 feat + docs(harness) 并 push origin/main
+2. 双端构建 0.1.21（macOS 前台 tauri build；Windows VM schtasks 流程见 win-vm-build skill + handoff Beware）
+3. 构建产物 SHA256 留档；发布与否待用户指令（release.sh 是上线步骤，本次双端构建不含）
 
 ## Open questions
 
@@ -45,8 +46,8 @@ _Last updated: 2026-08-13T18:56:00+07:00_
 
 ## Beware
 
-- 仓库 URL：一律用 `gongminami/cc-gate`；旧 `gongminami-pixel` 路径 API 返回 301/404，git 端跟随重定向但 API 端要 -L 或 gh CLI
-- 发版前先 push 代码再跑 release.sh（tag 自动指向新 commit）
-- Windows VM 构建：SSH 会话会回收子进程（npm install 被连坐杀死），必须用 `schtasks`/Task Scheduler 启动构建，日志写 VM 本地文件轮询
-- 删除旧 release 时保留了 git tag（gh release delete 默认不删 tag）；用户要求彻底删 tag 需显式 --cleanup-tag
-- waypoints 已 20 个（>20 提醒归档）
+- **A 方案撤销决策（2026-08-23 用户拍板）**：分类器(haiku档)成本占比 <5%，省钱收益几毛钱级不敌风险 → 四槽位统一钉用户选的主模型，"别名=完整一套"。haiku_model 字段/UI/路由字段已全部清除，勿再引入类似半成品开关
+- mimo2codex 是外部编译二进制（proxy_manager.rs bin_dir），本仓不可改；Codex 别名走命令行直连注入绕开它
+- PI 的 models.json 每次打开 /model 都热重载——Apply 后无需重启 PI 会话外的动作
+- Windows VM 构建：SSH 回收子进程 → 必须 schtasks 启动 + 日志轮询；构建目录必须全新（残留伪造 Cargo.toml 会污染 include_str! 路径）；macOS tauri build 必须前台跑
+- 仓库 URL 一律 gongminami/cc-gate（旧 gongminami-pixel API 404）

@@ -438,3 +438,19 @@ _Append-only. Newest at bottom. ISO8601 timestamps only._
 - **action**: 落 waypoint + 重写 handoff（0.1.20 状态：Gemini 直连 + 双端构建 + 发布 + 仓库迁移 gongminami org + 旧 release 全清）
 - **outcome**: L2 反映 0.1.20 发布后状态
 - **next**: git 本地提交 .harness/
+
+## 2026-08-23T11:16:48-0300 — session_open: --read boot（读取记忆）
+- **action**: 读 handoff + progress 尾部 + 最新 waypoint(2026-08-13T18-56) + decisions 尾部 + 当前工作_TODO.md；复核 model_catalog.rs CATALOG_URL=gongminami/cc-gate ✓、config_writer.rs 含 normalize_relay_base_url ✓
+- **code_drift**: handoff 记录 main @ `6ec47d5`，实际 HEAD = `5cf2306`（2026-08-21 relay baseUrl 归一化修复，同步之后新提交）；工作区干净，L2 待下次 sync 修正
+
+## 2026-08-23T13:15:35-0300 — work: 别名体系 v2（B 方案 + PI 接入 + A 撤销）
+- **touched**: config_writer.rs types.rs commands/config.rs lib.rs paths.rs backup.rs claude-proxy.js chat-proxy.js PageAliases.vue(新) Sidebar.vue App.vue api.ts models.ts Cargo.toml package.json
+- **action**: ①B: 路由表加 models 集，两代理 token 命中尊重请求模型名 + /v1/models 按 token 过滤（别名窗口 /model 真切换）；②别名页 v1 上线（左菜单/表单/复制短名字/rc 即时生效）；③PI 接入：AgentId::Pi + write_pi_models 双层 provider 合并写 ~/.pi/agent/models.json；④A(haiku 降级) 实现后经用户拍板撤销——成本占比<5% 收益几毛钱级不敌风险，回归四槽位统一压平
+- **outcome**: cargo test 18 passed + npm build ✓ + node --check ✓；版本 bump 0.1.21
+- **next**: git 提交+push → 双端构建
+
+## 2026-08-23T13:15:35-0300 — handoff_ready: 0.1.21 构建前同步
+- **touched**: .harness/waypoints/2026-08-23T13-14-50-0300.md .harness/handoff.md .harness/progress.md
+- **action**: 落 waypoint + 重写 handoff（0.1.21 别名体系 v2 状态）
+- **outcome**: L2 反映本轮全部工作
+- **next**: commit + push + 双端构建
