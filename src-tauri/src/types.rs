@@ -180,6 +180,9 @@ pub fn builtin_models() -> Vec<ModelDef> {
         ModelDef { slug: "glm-5.3".into(),               display_name: "GLM-5.3".into(),               provider: "glm".into(),        enabled: true,  context_window: 1_000_000, max_output_tokens: 65_536,  priority: 201, default_reasoning_level: "high".into(),   input_price_per_1k: 0.0011, output_price_per_1k: 0.0039, ..Default::default() },
         ModelDef { slug: "qwen3.7-max".into(),           display_name: "Qwen3.7 Max".into(),           provider: "qwen".into(),       enabled: true,  context_window: 262_144,   max_output_tokens: 65_536,  priority: 302, default_reasoning_level: "high".into(),   input_price_per_1k: 0.0017, output_price_per_1k: 0.005,  ..Default::default() },
         ModelDef { slug: "qwen3.8-max".into(),           display_name: "Qwen3.8 Max".into(),           provider: "qwen".into(),       enabled: true,  context_window: 262_144,   max_output_tokens: 65_536,  priority: 303, default_reasoning_level: "high".into(),   input_price_per_1k: 0.0013, output_price_per_1k: 0.0052, ..Default::default() },
+        // 2026-08 catalog sync (v3): Claude Opus 4.8 / Sonnet 5
+        ModelDef { slug: "claude-opus-4-8".into(),       display_name: "Claude Opus 4.8".into(),       provider: "anthropic".into(),  enabled: true,  context_window: 1_000_000, max_output_tokens: 128_000, priority: 51,  default_reasoning_level: "high".into(),   input_price_per_1k: 0.005,  output_price_per_1k: 0.025,  ..Default::default() },
+        ModelDef { slug: "claude-sonnet-5".into(),       display_name: "Claude Sonnet 5".into(),       provider: "anthropic".into(),  enabled: true,  context_window: 1_000_000, max_output_tokens: 128_000, priority: 52,  default_reasoning_level: "high".into(),   input_price_per_1k: 0.003,  output_price_per_1k: 0.015,  ..Default::default() },
     ]
 }
 

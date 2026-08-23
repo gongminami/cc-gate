@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "updated_at": "2026-08-23T00:00:00Z",
+  "version": 3,
+  "updated_at": "2026-08-23T12:00:00Z",
   "models": [
     {
       "slug": "deepseek-v4-pro",
@@ -160,6 +160,32 @@
       "native_responses": false,
       "input_price_per_1k": 0.0013,
       "output_price_per_1k": 0.0052
+    },
+    {
+      "slug": "claude-opus-4-8",
+      "display_name": "Claude Opus 4.8",
+      "provider": "anthropic",
+      "enabled": true,
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "priority": 51,
+      "default_reasoning_level": "high",
+      "supports_reasoning_summaries": true,
+      "input_price_per_1k": 0.005,
+      "output_price_per_1k": 0.025
+    },
+    {
+      "slug": "claude-sonnet-5",
+      "display_name": "Claude Sonnet 5",
+      "provider": "anthropic",
+      "enabled": true,
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "priority": 52,
+      "default_reasoning_level": "high",
+      "supports_reasoning_summaries": true,
+      "input_price_per_1k": 0.003,
+      "output_price_per_1k": 0.015
     }
   ]
 }

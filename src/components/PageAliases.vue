@@ -133,20 +133,35 @@ const aliases = computed(() => {
     <!-- 内联添加/编辑表单 -->
     <div class="card">
       <div class="inline-form">
-        <input v-model="form.name" class="alias-input" type="text" placeholder="别名" />
-        <select v-model="form.tool" @change="syncModelDefault">
-          <option v-for="t in TOOLS" :key="t.id" :value="t.id">{{ t.label }}</option>
-        </select>
-        <select v-model="form.model">
-          <option v-for="m in modelsFor" :key="m.slug" :value="m.slug">{{ m.display_name }}</option>
-        </select>
-        <select v-model="form.source" @change="syncModelDefault">
-          <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.label }}</option>
-        </select>
-        <button class="btn primary" :disabled="busy || !form.name.trim() || !form.model" @click="onSave">
-          {{ editingName ? '保存修改' : '+ 添加' }}
-        </button>
-        <button v-if="editingName" class="btn ghost" :disabled="busy" @click="cancelEdit">取消</button>
+        <div class="field">
+          <label>别名</label>
+          <input v-model="form.name" class="alias-input" type="text" placeholder="如 dsf" />
+        </div>
+        <div class="field">
+          <label>工具</label>
+          <select v-model="form.tool" @change="syncModelDefault">
+            <option v-for="t in TOOLS" :key="t.id" :value="t.id">{{ t.label }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>大模型</label>
+          <select v-model="form.model">
+            <option v-for="m in modelsFor" :key="m.slug" :value="m.slug">{{ m.display_name }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>来源</label>
+          <select v-model="form.source" @change="syncModelDefault">
+            <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.label }}</option>
+          </select>
+        </div>
+        <div class="field btn-field">
+          <label>&nbsp;</label>
+          <button class="btn primary" :disabled="busy || !form.name.trim() || !form.model" @click="onSave">
+            {{ editingName ? '保存修改' : '+ 添加' }}
+          </button>
+          <button v-if="editingName" class="btn ghost cancel-btn" :disabled="busy" @click="cancelEdit">取消</button>
+        </div>
       </div>
       <div class="form-hint dim">
         区分大小写 · 已开着的终端需执行 <code>source ~/.zshrc</code> 或新开终端 · 用量统计照常记录
@@ -172,7 +187,9 @@ const aliases = computed(() => {
 </template>
 
 <style scoped>
-.inline-form { display: flex; gap: 8px; align-items: center; padding: 14px 18px 4px; flex-wrap: wrap; }
+.inline-form { display: flex; gap: 12px; align-items: flex-end; padding: 14px 18px 4px; flex-wrap: wrap; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 12px; color: var(--fg-muted); font-weight: 600; }
 .alias-input { width: 130px; font-family: "SF Mono", "Menlo", monospace; font-weight: 600; }
 .inline-form input, .inline-form select {
   box-sizing: border-box; padding: 6px 10px; height: 34px;
@@ -181,6 +198,8 @@ const aliases = computed(() => {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .inline-form input:focus, .inline-form select:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.btn-field { flex-direction: row; gap: 6px; align-items: flex-end; }
+.cancel-btn { height: 34px; }
 .form-hint { padding: 2px 18px 12px; font-size: 12px; line-height: 1.6; }
 .form-hint code { background: var(--surface-soft); padding: 1px 5px; border-radius: 3px; }
 
