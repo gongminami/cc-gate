@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { getAppVersion } from "../ipc/api";
+import { useAppUpdate } from "../composables/useAppUpdate";
 
 defineProps<{ current: string }>();
 const emit = defineEmits<(e: "navigate", page: string) => void>();
+
+const { info: updateInfo } = useAppUpdate();
 
 const version = ref("…");
 onMounted(async () => {
@@ -13,9 +16,9 @@ onMounted(async () => {
 const nav = [
   { id: "home",       label: "首页",          icon: "⌂" },
   { id: "relay",      label: "中转与API_Key",  icon: "◎" },
-  { id: "models",     label: "模型管理",        icon: "◆" },
   { id: "shell",      label: "Shell 集成",      icon: ">" },
   { id: "aliases",    label: "别名",           icon: "@" },
+  { id: "models",     label: "模型管理",        icon: "◆" },
   // { id: "usage",      label: "用量统计",        icon: "▤" },
   // { id: "models",     label: "模型参数",        icon: "◆" },
   { id: "appearance", label: "外观",            icon: "◐" },
@@ -40,7 +43,18 @@ const nav = [
       </div>
     </nav>
     <div class="sidebar-footer">
-      <div class="nav-item" @click="emit('navigate', 'settings')">v{{ version }}</div>
+      <div class="nav-item" @click="emit('navigate', 'settings')">
+        v{{ version }}
+        <span v-if="updateInfo?.has_update" class="upd-dot" title="有新版本 {{ updateInfo.latest_version }}"></span>
+      </div>
     </div>
   </aside>
 </template>
+
+<style scoped>
+.upd-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); margin-left: 6px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+</style>

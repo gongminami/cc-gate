@@ -6,7 +6,7 @@ use crate::config_store;
 use crate::config_writer;
 use crate::error::{AppError, Result};
 use crate::launchd;
-use crate::model_catalog::{self, CheckUpdateResult};
+use crate::model_catalog::{self, AppUpdateInfo, CheckUpdateResult};
 use crate::proxy_manager::ProxyManager;
 use crate::types::{AppConfig, AgentMeta, RelayConfig, ProxyStatus, agent_list};
 
@@ -293,4 +293,46 @@ pub async fn check_model_updates(app: tauri::AppHandle) -> Result<CheckUpdateRes
         version: remote.version,
         updated_at: remote.updated_at,
     })
+}
+
+/// Compare "a.b.c" version strings numerically (no semver crate dependency).
+fn version_greater(a: &str, b: &str) -> bool {
+    let pa: Vec<u64> = a.split('.').filter_map(|s| s.parse().ok()).collect();
+    let pb: Vec<u64> = b.split('.').filter_map(|s| s.parse().ok()).collect();
+    for i in 0..pa.len().max(pb.len()) {
+        let x = pa.get(i).copied().unwrap_or(0);
+        let y = pb.get(i).copied().unwrap_or(0);
+        if x != y { return x > y; }
+    }
+    false
+}
+
+/// Check GitHub Releases for a newer app version. Silent-friendly:
+/// network errors bubble up as Err — frontend suppresses them on startup.
+#[tauri::command]
+pub async fn check_app_update(app: tauri::AppHandle) -> Result<AppUpdateInfo> {
+    let current = app.package_info().version.to_string();
+    let mut info = model_catalog::fetch_latest_release().await?;
+    info.current_version = current.clone();
+    info.has_update = version_greater(&info.latest_version, &current);
+    tracing::info!(
+        "app update check: current={} latest={} has_update={}",
+        current, info.latest_version, info.has_update
+    );
+    Ok(info)
+}
+
+/// Open a URL in the system browser (cross-platform, no extra plugin).
+#[tauri::command]
+pub fn open_url(url: String) {
+    let result = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(&url).spawn()
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(&url).spawn()
+    };
+    if let Err(e) = result {
+        tracing::warn!("open_url failed for {url}: {e}");
+    }
 }

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { AgentId, AgentMeta, AppConfig, ModelDef } from "../types/models";
-import { getAgentList, applyAgentConfig, checkModelUpdates, checkAgentStatus, restoreAgent, getProxyStatus, startProxy } from "../ipc/api";
+import { getAgentList, applyAgentConfig, checkModelUpdates, checkAgentStatus, restoreAgent, getProxyStatus, startProxy, openUrl } from "../ipc/api";
 import { useToast } from "../composables/useToast";
 import { useAppConfig } from "../composables/useAppConfig";
+import { useAppUpdate } from "../composables/useAppUpdate";
 import { listen } from "@tauri-apps/api/event";
 
 const toast = useToast();
 const { config, refresh: refreshConfig } = useAppConfig();
+const { info: updateInfo, checking: checkingAppUpdate, checkNow, dismiss: dismissUpdate } = useAppUpdate();
 
 const agents = ref<AgentMeta[]>([]);
 const selectedAgentId = ref<AgentId | null>(null);
@@ -178,6 +180,18 @@ async function onCheckUpdates() {
   }
 }
 
+async function onCheckAppUpdate() {
+  checkingAppUpdate.value = true;
+  try {
+    const r = await checkNow();
+    if (!r) { toast.err("检查失败（网络或 GitHub 不可达）"); return; }
+    if (r.has_update) { toast.ok(`发现新版本 v${r.latest_version}（当前 v${r.current_version}）`); }
+    else { toast.ok("当前已是最新版本"); }
+  } finally {
+    checkingAppUpdate.value = false;
+  }
+}
+
 let unlisten: (() => void) | null = null;
 onMounted(async () => {
   agents.value = await getAgentList();
@@ -210,6 +224,13 @@ watch(config, () => { if (config.value) { initWorking(); } });
       <h2>首页</h2>
     </header>
 
+    <!-- App update banner -->
+    <div v-if="updateInfo?.has_update" class="app-update-banner">
+      <span>🚀 新版本 v{{ updateInfo.latest_version }} 已发布（当前 v{{ updateInfo.current_version }}）</span>
+      <button class="proxy-retry-btn" :disabled="!updateInfo.release_url" @click="openUrl(updateInfo.release_url)">去 GitHub 下载</button>
+      <button class="proxy-retry-btn" @click="dismissUpdate()">忽略此版本</button>
+    </div>
+
     <!-- Proxy status warning -->
     <div v-if="downProxies.length > 0" class="proxy-warn">
       <span>⚠️ {{ downProxies.length }} 个代理未启动：</span>
@@ -241,9 +262,13 @@ watch(config, () => { if (config.value) { initWorking(); } });
           <div class="model-header">
             <span>{{ selectedAgent.name }} 的模型</span>
             <span class="dim">({{ workingModels[selectedAgent.id]?.length ?? 0 }}/{{ allModels.length }})</span>
+            <button class="update-btn" :disabled="checkingAppUpdate" @click="onCheckAppUpdate">
+              <span v-if="checkingAppUpdate" class="update-spin">⟳</span>
+              <span v-else>检查更新</span>
+            </button>
             <button class="update-btn" :disabled="checking" @click="onCheckUpdates">
               <span v-if="checking" class="update-spin">⟳</span>
-              <span v-else>检查模型更新</span>
+              <span v-else>模型目录更新</span>
             </button>
             <!-- 已代理且无改动 → 恢复按钮；有改动或未代理 → 应用按钮 -->
             <button v-if="agentProxied[selectedAgent.id] && !isAgentDirty(selectedAgent.id)" class="agent-apply-btn restore-btn"
@@ -294,6 +319,15 @@ watch(config, () => { if (config.value) { initWorking(); } });
   padding: 8px 16px; margin-bottom: 8px;
   background: color-mix(in srgb, #f0a020 15%, transparent);
   border: 1px solid color-mix(in srgb, #f0a020 40%, transparent);
+  border-radius: var(--radius-md); font-size: 13px; color: var(--fg);
+}
+
+/* ── App update banner ──────────────────────── */
+.app-update-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 16px; margin-bottom: 8px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   border-radius: var(--radius-md); font-size: 13px; color: var(--fg);
 }
 .proxy-warn-item {

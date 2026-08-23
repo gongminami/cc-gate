@@ -59,3 +59,11 @@ export interface PerModelUsage { label: string; models: PerModelSlot[]; }
 export interface ToolStatus { name: string; command: string; installed: boolean; version: string | null; install_cmd: string; link: string; category: string; }
 
 export interface CheckUpdateResult { new_models: number; new_slugs: string[]; version: number; updated_at: string; }
+
+export interface AppUpdateInfo {
+  has_update: boolean;
+  current_version: string;
+  latest_version: string;
+  release_url: string;
+  notes: string;
+}

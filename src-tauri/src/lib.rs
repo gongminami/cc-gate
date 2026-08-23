@@ -143,6 +143,8 @@ pub fn run() {
             commands::usage::get_app_version,
             commands::usage::copy_to_clipboard,
             commands::config::check_model_updates,
+            commands::config::check_app_update,
+            commands::config::open_url,
             check_tools,
             check_one_tool,
             save_tool_cache,

@@ -69,3 +69,8 @@ export async function saveToolCache(results: ToolStatus[]): Promise<void> { retu
 
 // Model catalog
 export async function checkModelUpdates(): Promise<CheckUpdateResult> { return invoke<CheckUpdateResult>("check_model_updates"); }
+
+// App update check (GitHub Releases)
+import type { AppUpdateInfo } from "../types/models";
+export async function checkAppUpdate(): Promise<AppUpdateInfo> { return invoke<AppUpdateInfo>("check_app_update"); }
+export async function openUrl(url: string): Promise<void> { return invoke<void>("open_url", { url }); }

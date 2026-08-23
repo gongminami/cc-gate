@@ -128,9 +128,73 @@ pub struct CheckUpdateResult {
     pub updated_at: String,
 }
 
-// ── Relay presets (快速填入, cloud-managed) ──────────────────
+/// Result returned by the `check_app_update` Tauri command.
+#[derive(Debug, Clone, Serialize)]
+pub struct AppUpdateInfo {
+    /// Whether the remote release is newer than the running app.
+    pub has_update: bool,
+    /// Version of the running app (from Cargo.toml).
+    pub current_version: String,
+    /// Latest version on GitHub Releases (no `v` prefix).
+    pub latest_version: String,
+    /// Releases page URL for the user to download from.
+    pub release_url: String,
+    /// Release notes (body of the GitHub release).
+    pub notes: String,
+}
 
-/// One "quick fill" preset for the relay-add dialog.
+const RELEASES_URL: &str = "https://api.github.com/repos/gongminami/cc-gate/releases/latest";
+
+/// Minimal shape of the GitHub Releases "latest" API response.
+#[derive(Debug, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    html_url: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+}
+
+/// Fetch the latest published release from GitHub Releases.
+/// `has_update` is filled by the caller (needs the local version).
+pub async fn fetch_latest_release() -> Result<AppUpdateInfo, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent("cc-gate/update-check")
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+    let resp = client
+        .get(RELEASES_URL)
+        .send()
+        .await
+        .map_err(|e| format!("网络请求失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub 返回 {}", resp.status()));
+    }
+
+    let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let rel: GitHubRelease = serde_json::from_str(&text)
+        .map_err(|e| format!("响应解析失败: {e}"))?;
+
+    if rel.draft || rel.prerelease {
+        return Err("当前没有正式发布版本".into());
+    }
+
+    Ok(AppUpdateInfo {
+        has_update: false,
+        current_version: String::new(),
+        latest_version: rel.tag_name.trim_start_matches('v').to_string(),
+        release_url: rel.html_url,
+        notes: rel.body.unwrap_or_default(),
+    })
+}
+
+// ── Relay presets (快速填入, cloud-managed) ──────────────────/// One "quick fill" preset for the relay-add dialog.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayPreset {
     pub name: String,

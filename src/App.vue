@@ -15,9 +15,11 @@ import PageAppearance from "./components/PageAppearance.vue";
 import PageAbout from "./components/PageAbout.vue";
 import { useAppConfig } from "./composables/useAppConfig";
 import { useTheme } from "./composables/useTheme";
+import { useAppUpdate } from "./composables/useAppUpdate";
 
 useTheme();
 const { config, loading, error, refresh } = useAppConfig();
+const { refresh: checkUpdate } = useAppUpdate();
 const currentPage = ref<string>(localStorage.getItem("ccgate.page") ?? "home");
 
 function navigate(page: string) {
@@ -25,7 +27,11 @@ function navigate(page: string) {
   localStorage.setItem("ccgate.page", page);
 }
 
-onMounted(async () => { await refresh(); });
+onMounted(async () => {
+  await refresh();
+  // Startup silent app-update check — failures are suppressed inside the composable.
+  setTimeout(() => { checkUpdate(); }, 2500);
+});
 </script>
 
 <template>

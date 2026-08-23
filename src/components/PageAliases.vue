@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type { AppConfig } from "../types/models";
 import { addAlias, updateAlias, deleteAlias, copyToClipboard } from "../ipc/api";
 import { useToast } from "../composables/useToast";
@@ -72,6 +72,9 @@ function syncModelDefault() {
   const ok = modelsFor.value.some(m => m.slug === form.value.model);
   if (!ok) form.value.model = modelsFor.value[0]?.slug ?? "";
 }
+
+// 配置异步到达 / 模型列表变化时自动补上默认大模型，避免下拉框空着
+watch(modelsFor, () => syncModelDefault(), { immediate: true });
 
 function startEditAlias(a: { name: string; tool: string; model: string; source: string }) {
   form.value = { name: a.name, tool: a.tool, model: a.model, source: a.source };
