@@ -34,6 +34,9 @@ const PROVIDER_META: &[ProviderMeta] = &[
     // Gemini 官方 OpenAI 兼容端点(原生 GenerateContent 协议由 Google 侧转换成 Chat Completions,
     // 本地三个代理的 baseUrl + "/chat/completions" 拼接恰好命中 .../v1beta/openai/chat/completions,无需 /v1)。
     ProviderMeta { id: "gemini",    name: "Google Gemini",  base_url: "https://generativelanguage.googleapis.com/v1beta/openai",                        env_key: "GEMINI_API_KEY",  env_key_aliases: &["GOOGLE_API_KEY"], feature: None },
+    ProviderMeta { id: "moonshot",  name: "月之暗面Kimi",   base_url: "https://api.moonshot.ai/v1",                                                     env_key: "MOONSHOT_API_KEY", env_key_aliases: &["KIMI_API_KEY"],   feature: None },
+    // LongCat 官方 OpenAI 兼容端点: https://api.longcat.chat/openai/v1/chat/completions
+    ProviderMeta { id: "longcat",   name: "美团LongCat",    base_url: "https://api.longcat.chat/openai/v1",                                             env_key: "LONGCAT_API_KEY",  env_key_aliases: &[],                 feature: None },
 ];
 
 fn meta_by_id(id: &str) -> Option<&'static ProviderMeta> {

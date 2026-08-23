@@ -1,6 +1,6 @@
 {
-  "version": 3,
-  "updated_at": "2026-08-23T12:00:00Z",
+  "version": 4,
+  "updated_at": "2026-08-23T14:00:00Z",
   "models": [
     {
       "slug": "deepseek-v4-pro",
@@ -186,6 +186,47 @@
       "supports_reasoning_summaries": true,
       "input_price_per_1k": 0.003,
       "output_price_per_1k": 0.015
+    },
+    {
+      "slug": "claude-fable-5",
+      "display_name": "Claude Fable 5",
+      "provider": "anthropic",
+      "enabled": true,
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "priority": 53,
+      "default_reasoning_level": "xhigh",
+      "supports_reasoning_summaries": true,
+      "input_price_per_1k": 0.01,
+      "output_price_per_1k": 0.05
+    },
+    {
+      "slug": "kimi-k3",
+      "display_name": "Kimi K3",
+      "provider": "moonshot",
+      "enabled": true,
+      "context_window": 1048576,
+      "max_output_tokens": 65536,
+      "priority": 600,
+      "default_reasoning_level": "high",
+      "supports_reasoning_summaries": true,
+      "native_responses": false,
+      "input_price_per_1k": 0.003,
+      "output_price_per_1k": 0.015
+    },
+    {
+      "slug": "LongCat-2.0",
+      "display_name": "LongCat 2.0",
+      "provider": "longcat",
+      "enabled": true,
+      "context_window": 1000000,
+      "max_output_tokens": 131072,
+      "priority": 700,
+      "default_reasoning_level": "high",
+      "supports_reasoning_summaries": true,
+      "native_responses": false,
+      "input_price_per_1k": 0.00075,
+      "output_price_per_1k": 0.00295
     }
   ]
 }

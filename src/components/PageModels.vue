@@ -20,6 +20,7 @@ function providerLabel(p: string): string {
     deepseek: "DeepSeek", glm: "智谱 GLM", qwen: "阿里 Qwen",
     qwen38: "阿里 Qwen3.8", xiaomi: "小米 MiMo",
     anthropic: "Anthropic", openai: "OpenAI", gemini: "Google Gemini",
+    moonshot: "月之暗面 Kimi", longcat: "美团 LongCat",
   };
   return m[p] || p;
 }

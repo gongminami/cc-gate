@@ -183,6 +183,10 @@ pub fn builtin_models() -> Vec<ModelDef> {
         // 2026-08 catalog sync (v3): Claude Opus 4.8 / Sonnet 5
         ModelDef { slug: "claude-opus-4-8".into(),       display_name: "Claude Opus 4.8".into(),       provider: "anthropic".into(),  enabled: true,  context_window: 1_000_000, max_output_tokens: 128_000, priority: 51,  default_reasoning_level: "high".into(),   input_price_per_1k: 0.005,  output_price_per_1k: 0.025,  ..Default::default() },
         ModelDef { slug: "claude-sonnet-5".into(),       display_name: "Claude Sonnet 5".into(),       provider: "anthropic".into(),  enabled: true,  context_window: 1_000_000, max_output_tokens: 128_000, priority: 52,  default_reasoning_level: "high".into(),   input_price_per_1k: 0.003,  output_price_per_1k: 0.015,  ..Default::default() },
+        // 2026-08 catalog sync (v4): Fable 5 / Kimi K3 / LongCat-2.0 (官方 slug 大小写原样)
+        ModelDef { slug: "claude-fable-5".into(),        display_name: "Claude Fable 5".into(),        provider: "anthropic".into(),  enabled: true,  context_window: 1_000_000, max_output_tokens: 128_000, priority: 53,  default_reasoning_level: "xhigh".into(),  input_price_per_1k: 0.01,   output_price_per_1k: 0.05,   ..Default::default() },
+        ModelDef { slug: "kimi-k3".into(),               display_name: "Kimi K3".into(),               provider: "moonshot".into(),   enabled: true,  context_window: 1_048_576, max_output_tokens: 65_536,  priority: 600, default_reasoning_level: "high".into(),   input_price_per_1k: 0.003,  output_price_per_1k: 0.015,  ..Default::default() },
+        ModelDef { slug: "LongCat-2.0".into(),           display_name: "LongCat 2.0".into(),           provider: "longcat".into(),    enabled: true,  context_window: 1_000_000, max_output_tokens: 131_072, priority: 700, default_reasoning_level: "high".into(),   input_price_per_1k: 0.00075,output_price_per_1k: 0.00295,..Default::default() },
     ]
 }
 
@@ -196,6 +200,7 @@ pub fn all_api_key_names() -> Vec<(&'static str, &'static str, &'static str)> {
         ("QWEN38_API_KEY",     "阿里 Qwen3.8",      ""),
         ("MIMO_API_KEY",       "小米 MiMo",          "也支持 MINIMAX_API_KEY"),
         ("MOONSHOT_API_KEY",   "Moonshot / Kimi",   "也支持 KIMI_API_KEY"),
+        ("LONGCAT_API_KEY",    "美团 LongCat",       ""),
         ("ERNIE_API_KEY",      "百度 文心一言",       ""),
         ("DOUBAO_API_KEY",     "字节 豆包",          "也支持 VOLCANO_API_KEY"),
         ("SPARK_API_KEY",      "讯飞 星火",          ""),
