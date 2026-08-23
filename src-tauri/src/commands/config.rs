@@ -89,11 +89,12 @@ fn persist_aliases(cfg: &AppConfig) -> Result<()> {
     config_writer::write_shell_aliases(cfg)?;
     config_writer::write_alias_routes(cfg)?;
     config_writer::write_pi_models(cfg)?;
+    config_writer::write_opencode_alias_configs(cfg)?;
     Ok(())
 }
 
 fn validate_alias_combo(cfg: &AppConfig, tool: &str, model: &str, source: &str) -> Result<()> {
-    const TOOLS: &[&str] = &["claude_cli", "codex_cli", "aider", "pi"];
+    const TOOLS: &[&str] = &["claude_cli", "codex_cli", "aider", "pi", "opencode", "hermes"];
     if !TOOLS.contains(&tool) {
         return Err(AppError::Config(format!("不支持的工具类型: {tool}")));
     }

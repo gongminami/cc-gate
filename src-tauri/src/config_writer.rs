@@ -307,13 +307,14 @@ fn build_one_route(a: &crate::types::CustomAlias, cfg: &AppConfig) -> Option<ser
                 (normalize_relay_base_url(&relay.url), relay_env_key(&relay.name), false)
             }
         }
-        // Aider speaks OpenAI protocol — always proxied so every combo works and
-        // usage stays visible (direct providers resolve via PROVIDER_META).
-        ("aider", "direct") => {
+        // Aider / OpenCode / Hermes speak OpenAI protocol — always proxied so
+        // every combo works and usage stays visible (direct providers resolve
+        // via PROVIDER_META).
+        ("aider" | "opencode" | "hermes", "direct") => {
             let meta = meta_by_id(&model.provider)?;
             (meta.base_url.to_string(), resolve_env_key(meta), false)
         }
-        ("aider", s) if s.starts_with("relay:") => {
+        ("aider" | "opencode" | "hermes", s) if s.starts_with("relay:") => {
             let relay = relay_by_name(&s[6..])?;
             (normalize_relay_base_url(&relay.url), relay_env_key(&relay.name), false)
         }
@@ -444,6 +445,64 @@ pub fn write_pi_models(cfg: &AppConfig) -> Result<()> {
     if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
     let content = serde_json::to_string_pretty(&merged)? + "\n";
     write_if_changed(&path, &content)
+}
+
+// ── OpenCode alias config files ─────────────────────────────
+
+/// Write one opencode.jsonc-shaped fragment per `opencode` custom alias into
+/// `~/.mimo2codex/opencode-aliases/<name>.json`. The alias's shell line points
+/// OPENCODE_CONFIG at it; the provider carries the ccgate token so chat-proxy
+/// routes per-window (方案B). Directory is wiped first — stale alias configs
+/// must never outlive their alias.
+pub fn write_opencode_alias_configs(cfg: &AppConfig) -> Result<()> {
+    let dir = paths::mimo2codex_dir().join("opencode-aliases");
+    if dir.exists() {
+        fs::remove_dir_all(&dir)?;
+    }
+    let routes: Vec<serde_json::Value> = build_alias_routes(cfg)
+        .into_iter()
+        .filter(|r| r["tool"] == "opencode")
+        .collect();
+    if routes.is_empty() { return Ok(()); }
+
+    fs::create_dir_all(&dir)?;
+    for route in routes {
+        let name = route["name"].as_str().unwrap_or_default().to_string();
+        let token = route["token"].as_str().unwrap_or_default().to_string();
+        if name.is_empty() || token.is_empty() { continue; }
+        let port = cfg.proxy_ports.chat_proxy;
+
+        // Models this source carries, in opencode's models-map shape.
+        let mut models_map = serde_json::Map::new();
+        if let Some(arr) = route["models"].as_array() {
+            for slug in arr.iter().filter_map(|s| s.as_str()) {
+                let display = cfg.models.iter().find(|m| m.slug == slug)
+                    .map(|m| m.display_name.clone())
+                    .unwrap_or_else(|| slug.to_string());
+                models_map.insert(slug.to_string(), serde_json::json!({ "name": display }));
+            }
+        }
+
+        let doc = serde_json::json!({
+            "provider": {
+                format!("ccgate-{name}"): {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": format!("CC-Gate · {name}"),
+                    "options": {
+                        "baseURL": format!("http://127.0.0.1:{port}/v1"),
+                        "apiKey": token,
+                    },
+                    "models": models_map,
+                }
+            },
+            "model": format!("ccgate-{name}/{}", route["model"].as_str().unwrap_or_default()),
+        });
+
+        let path = dir.join(format!("{name}.json"));
+        fs::write(&path, serde_json::to_string_pretty(&doc)? + "\n")?;
+        tracing::info!("opencode alias config written: {}", path.display());
+    }
+    Ok(())
 }
 
 // ── .env relay keys ─────────────────────────────────────────
@@ -856,6 +915,8 @@ fn gen_aliases_impl(cfg: &AppConfig, out: &mut String, powershell: bool) {
             "claude_cli" => custom_claude_line(a, cfg, powershell),
             "codex_cli"  => custom_codex_line(a, cfg, powershell),
             "aider"      => custom_aider_line(a, cfg, powershell),
+            "opencode"   => custom_opencode_line(a, powershell),
+            "hermes"     => custom_hermes_line(a, powershell),
             _ => continue,
         };
         out.push_str(&line);
@@ -979,6 +1040,7 @@ fn clean_stale_bat_files() {
     write_openclaw_config(cfg)?;
     write_opencode_config(cfg)?;
     write_pi_models(cfg)?;
+    write_opencode_alias_configs(cfg)?;
     tracing::info!("All tool configs written");
     Ok(())
 }
@@ -988,7 +1050,6 @@ fn clean_stale_bat_files() {
 pub fn write_hermes_config(cfg: &AppConfig) -> Result<()> {
     let slugs: Vec<String> = cfg.agent_models
         .get("hermes").cloned().unwrap_or_default();
-    if slugs.is_empty() { return Ok(()); }
 
     let path = paths::hermes_config_yaml();
     let src = if path.exists() { fs::read_to_string(&path).unwrap_or_default() } else { String::new() };
@@ -1002,9 +1063,8 @@ pub fn write_hermes_config(cfg: &AppConfig) -> Result<()> {
 
     let port = cfg.proxy_ports.chat_proxy;
     let base_url = format!("http://127.0.0.1:{port}/v1");
-    let default_model = slugs.first().cloned().unwrap();
 
-    // Build CC-Gate provider entry
+    // Build CC-Gate base provider entry (only when homepage assigns models)
     let mut models_map = serde_yaml::Mapping::new();
     for slug in &slugs {
         if let Some(m) = cfg.models.iter().find(|d| &d.slug == slug) {
@@ -1015,27 +1075,47 @@ pub fn write_hermes_config(cfg: &AppConfig) -> Result<()> {
         }
     }
 
-    let mut provider = serde_yaml::Mapping::new();
-    provider.insert("name".into(), "ccgate".into());
-    provider.insert("base_url".into(), base_url.into());
-    provider.insert("api_key".into(), "proxy".into());
-    provider.insert("api_mode".into(), "chat_completions".into());
-    provider.insert("models".into(), serde_yaml::Value::Mapping(models_map));
-    provider.insert("model".into(), default_model.into());
-
-    // Filter existing custom_providers to keep non-CC-Gate ones
+    // Filter existing custom_providers to keep non-CC-Gate ones.
+    // "ccgate" AND every per-alias "ccgate-<name>" are ours; anything else survives.
+    let is_ours = |name: &str| name == "ccgate" || name.starts_with("ccgate-");
     let mut new_providers: Vec<serde_yaml::Value> = Vec::new();
     if let serde_yaml::Value::Mapping(ref map) = doc {
         if let Some(serde_yaml::Value::Sequence(existing)) = map.get("custom_providers") {
             for entry in existing {
                 if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
-                    if name == "ccgate" { continue; } // remove old CC-Gate entry
+                    if is_ours(name) { continue; } // remove old CC-Gate entries
                 }
                 new_providers.push(entry.clone());
             }
         }
     }
-    new_providers.push(serde_yaml::Value::Mapping(provider));
+
+    if !slugs.is_empty() {
+        let default_model = slugs.first().cloned().unwrap();
+        let mut provider = serde_yaml::Mapping::new();
+        provider.insert("name".into(), "ccgate".into());
+        provider.insert("base_url".into(), base_url.clone().into());
+        provider.insert("api_key".into(), "proxy".into());
+        provider.insert("api_mode".into(), "chat_completions".into());
+        provider.insert("models".into(), serde_yaml::Value::Mapping(models_map));
+        provider.insert("model".into(), default_model.into());
+        new_providers.push(serde_yaml::Value::Mapping(provider));
+    }
+
+    // Per-alias providers (方案B token routing): each pins its own source via the
+    // alias's ccgate-<name> bearer token, independent of homepage assignment.
+    for route in build_alias_routes(cfg) {
+        if route["tool"] != "hermes" { continue; }
+        let name = route["name"].as_str().unwrap_or_default().to_string();
+        if name.is_empty() { continue; }
+        let token = format!("ccgate-{name}");
+        let mut p = serde_yaml::Mapping::new();
+        p.insert("name".into(), serde_yaml::Value::String(format!("ccgate-{name}")));
+        p.insert("base_url".into(), base_url.clone().into());
+        p.insert("api_key".into(), serde_yaml::Value::String(token));
+        p.insert("api_mode".into(), "chat_completions".into());
+        new_providers.push(serde_yaml::Value::Mapping(p));
+    }
 
     if let serde_yaml::Value::Mapping(ref mut map) = doc {
         map.insert("custom_providers".into(), serde_yaml::Value::Sequence(new_providers));
@@ -1275,6 +1355,39 @@ fn custom_aider_line(a: &crate::types::CustomAlias, cfg: &AppConfig, powershell:
         format!(
             "alias {name}='OPENAI_API_BASE=http://127.0.0.1:{port}/v1 OPENAI_API_KEY={token} \\aider --model openai/{model}'\n",
             name = a.name, port = port, token = token, model = a.model,
+        )
+    }
+}
+
+/// OpenCode: OPENCODE_CONFIG points at a per-alias config file (written by
+/// write_opencode_alias_configs) whose provider carries the ccgate token.
+fn custom_opencode_line(a: &crate::types::CustomAlias, powershell: bool) -> String {
+    if powershell {
+        format!(
+            "function {name} {{ $env:OPENCODE_CONFIG=\"$env:USERPROFILE\\.mimo2codex\\opencode-aliases\\{name}.json\"; & (Get-Command opencode) $args }}\n",
+            name = a.name,
+        )
+    } else {
+        format!(
+            "alias {name}='OPENCODE_CONFIG=\"$HOME/.mimo2codex/opencode-aliases/{name}.json\" \\opencode'\n",
+            name = a.name,
+        )
+    }
+}
+
+/// Hermes: per-alias provider entries (ccgate-<name>) are written into
+/// config.yaml by write_hermes_config; the alias just selects provider+model.
+fn custom_hermes_line(a: &crate::types::CustomAlias, powershell: bool) -> String {
+    let provider = format!("ccgate-{}", a.name);
+    if powershell {
+        format!(
+            "function {name} {{ & (Get-Command hermes) --provider '{provider}' -m '{model}' $args }}\n",
+            name = a.name, provider = provider, model = a.model,
+        )
+    } else {
+        format!(
+            "alias {name}='\\hermes --provider {provider} -m {model}'\n",
+            name = a.name, provider = provider, model = a.model,
         )
     }
 }
@@ -1693,5 +1806,43 @@ mod tier_pi_tests {
         // invalid docs are rejected so a broken file never gets wiped
         assert!(merge_pi_models(serde_json::json!("oops"), &cfg).is_err());
         assert!(merge_pi_models(serde_json::json!({"providers": []}), &cfg).is_err());
+    }
+}
+
+#[cfg(test)]
+mod opencode_hermes_tests {
+    use super::{build_alias_routes, gen_aliases_impl};
+    use crate::types::{AppConfig, CustomAlias};
+
+    fn cfg_with(tool: &str) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.agent_models.clear();
+        cfg.custom_aliases = vec![CustomAlias {
+            name: "zz".into(), tool: tool.into(),
+            model: "deepseek-v4-flash".into(), source: "relay:r1".into(),
+        }];
+        cfg.relays.push(crate::types::RelayConfig {
+            name: "r1".into(), url: "https://r1.example.com/v1".into(),
+            anthropic_url: None, key: "k".into(),
+        });
+        cfg
+    }
+
+    #[test]
+    fn opencode_alias_line_points_at_config_file() {
+        let cfg = cfg_with("opencode");
+        let mut out = String::new();
+        gen_aliases_impl(&cfg, &mut out, false);
+        assert!(out.contains("alias zz='OPENCODE_CONFIG=\"$HOME/.mimo2codex/opencode-aliases/zz.json\" \\opencode'"), "{out}");
+        // route exists so the token is recognized by chat-proxy
+        assert!(build_alias_routes(&cfg).iter().any(|r| r["token"] == "ccgate-zz"));
+    }
+
+    #[test]
+    fn hermes_alias_line_selects_provider_and_model() {
+        let cfg = cfg_with("hermes");
+        let mut out = String::new();
+        gen_aliases_impl(&cfg, &mut out, false);
+        assert!(out.contains("alias zz='\\hermes --provider ccgate-zz -m deepseek-v4-flash'"), "{out}");
     }
 }
