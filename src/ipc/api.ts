@@ -23,6 +23,10 @@ export async function writeToolConfigs(cfg: AppConfig): Promise<string> { return
 export async function addRelay(cfg: AppConfig, name: string, url: string, key: string, anthropicUrl?: string): Promise<AppConfig> { return invoke<AppConfig>("add_relay", { cfg, name, url, key, anthropicUrl }); }
 export async function updateRelay(cfg: AppConfig, oldName: string, name: string, url: string, key: string, anthropicUrl?: string): Promise<AppConfig> { return invoke<AppConfig>("update_relay", { cfg, oldName, name, url, key, anthropicUrl }); }
 export async function deleteRelay(cfg: AppConfig, name: string): Promise<AppConfig> { return invoke<AppConfig>("delete_relay", { cfg, name }); }
+export async function discoverRelayModels(cfg: AppConfig, name: string): Promise<AppConfig> { return invoke<AppConfig>("discover_relay_models", { cfg, name }); }
+export async function setRelayEnabled(cfg: AppConfig, name: string, enabled: boolean): Promise<AppConfig> { return invoke<AppConfig>("set_relay_enabled", { cfg, name, enabled }); }
+export async function setRelayModelSelection(cfg: AppConfig, name: string, ids: string[]): Promise<AppConfig> { return invoke<AppConfig>("set_relay_model_selection", { cfg, name, ids }); }
+export async function setModelRouting(cfg: AppConfig, slug: string, routing: string): Promise<AppConfig> { return invoke<AppConfig>("set_model_routing", { cfg, slug, routing }); }
 
 // Custom alias CRUD (别名页)
 export async function addAlias(cfg: AppConfig, name: string, tool: string, model: string, source: string): Promise<AppConfig> { return invoke<AppConfig>("add_alias", { cfg, name, tool, model, source }); }

@@ -57,7 +57,7 @@ pub fn add_relay(mut cfg: AppConfig, name: String, url: String, key: String, ant
     if cfg.relays.iter().any(|r| r.name == name) {
         return Err(AppError::Config(format!("中转站 '{}' 已存在", name)));
     }
-    cfg.relays.push(RelayConfig { name, url, anthropic_url, key });
+    cfg.relays.push(RelayConfig { name, url, anthropic_url, key, models: Vec::new(), enabled: None });
     config_store::save(&cfg)?;
     Ok(cfg)
 }
@@ -68,6 +68,52 @@ pub fn update_relay(mut cfg: AppConfig, old_name: String, name: String, url: Str
         r.name = name; r.url = url; r.anthropic_url = anthropic_url; r.key = key;
     }
     config_store::save(&cfg)?;
+    Ok(cfg)
+}
+
+/// 全局线路：route one model "direct" | "relay:<name>" — applies to EVERY tool
+/// (providers.json is shared). Rewritten immediately so the change is live.
+#[tauri::command]
+pub fn set_model_routing(mut cfg: AppConfig, slug: String, routing: String) -> Result<AppConfig> {
+    if routing != "direct" && !cfg.relays.iter().any(|r| format!("relay:{}", r.name) == routing) {
+        return Err(AppError::Config(format!("未知线路: {routing}")));
+    }
+    tracing::info!("model routing set: {slug} → {routing}");
+    cfg.model_routing.insert(slug.clone(), routing);
+    config_store::save(&cfg)?;
+    config_writer::write_providers(&cfg)?;
+    Ok(cfg)
+}
+
+/// 挑选：set exactly which of a relay's discovered models appear in the
+/// pickers (providers.json + Codex catalog rewritten immediately).
+#[tauri::command]
+pub fn set_relay_model_selection(mut cfg: AppConfig, name: String, ids: Vec<String>) -> Result<AppConfig> {
+    use std::collections::HashSet;
+    let picked: HashSet<String> = ids.into_iter().collect();
+    let relay = cfg.relays.iter_mut().find(|r| r.name == name)
+        .ok_or_else(|| AppError::Config(format!("中转站「{name}」不存在")))?;
+    for dm in &mut relay.models {
+        dm.selected = picked.contains(&dm.id);
+    }
+    tracing::info!("relay {} selection: {}/{}", name, picked.len(), relay.models.len());
+    config_store::save(&cfg)?;
+    config_writer::write_providers(&cfg)?;
+    config_writer::write_model_catalog(&cfg)?;
+    Ok(cfg)
+}
+
+/// Enable/disable a relay's discovered models. Disabled relays vanish from
+/// every picker (providers.json rewritten immediately) but keep their stored
+/// model list — re-enabling restores them without re-discovery.
+#[tauri::command]
+pub fn set_relay_enabled(mut cfg: AppConfig, name: String, enabled: bool) -> Result<AppConfig> {
+    let flag = if enabled { None } else { Some(false) };
+    cfg.relays.iter_mut().find(|r| r.name == name)
+        .ok_or_else(|| AppError::Config(format!("中转站「{name}」不存在")))?
+        .enabled = flag;
+    config_store::save(&cfg)?;
+    config_writer::write_providers(&cfg)?;
     Ok(cfg)
 }
 
@@ -270,6 +316,34 @@ pub async fn refresh_relay_presets() -> Vec<crate::model_catalog::RelayPreset> {
 #[tauri::command] pub fn quit_app(app: tauri::AppHandle) { app.exit(0); }
 #[tauri::command] pub fn hide_main_window(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") { let _ = w.hide(); }
+}
+
+/// Discover all models a relay serves (GET {relay}/v1/models) and store them on
+/// the RelayConfig. Default-on: everything is imported, no per-model opt-in.
+/// Rewrites providers.json so both proxies list them immediately.
+#[tauri::command]
+pub async fn discover_relay_models(mut cfg: AppConfig, name: String) -> Result<AppConfig> {
+    let relay = cfg.relays.iter().find(|r| r.name == name).cloned()
+        .ok_or_else(|| AppError::Config(format!("中转站「{name}」不存在")))?;
+    let mut models = crate::model_catalog::fetch_relay_models(&relay.url, &relay.key)
+        .await
+        .map_err(AppError::Config)?;
+    if models.is_empty() {
+        return Err(AppError::Config("中转站未返回任何模型".into()));
+    }
+    tracing::info!("relay {} discovered {} models", name, models.len());
+    let relay = cfg.relays.iter_mut().find(|r| r.name == name).unwrap();
+    // Preserve the user's 挑选 across refreshes: same id keeps its selected flag.
+    let prev: std::collections::HashMap<String, bool> =
+        relay.models.iter().map(|dm| (dm.id.clone(), dm.selected)).collect();
+    for dm in &mut models {
+        dm.selected = *prev.get(&dm.id).unwrap_or(&true);
+    }
+    relay.models = models;
+    config_store::save(&cfg)?;
+    config_writer::write_providers(&cfg)?;
+    config_writer::write_model_catalog(&cfg)?;
+    Ok(cfg)
 }
 
 /// Fetch latest model catalog from GitHub, merge into user config.

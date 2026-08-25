@@ -14,16 +14,13 @@ onMounted(async () => {
 });
 
 const nav = [
-  { id: "home",       label: "首页",          icon: "⌂" },
-  { id: "relay",      label: "中转与API_Key",  icon: "◎" },
-  { id: "shell",      label: "Shell 集成",      icon: ">" },
-  { id: "aliases",    label: "别名",           icon: "@" },
-  { id: "models",     label: "模型管理",        icon: "◆" },
-  // { id: "usage",      label: "用量统计",        icon: "▤" },
-  // { id: "models",     label: "模型参数",        icon: "◆" },
-  { id: "appearance", label: "外观",            icon: "◐" },
-  { id: "tools",      label: "工具检测",        icon: "🔧" },
-  { id: "startup",    label: "启动项",          icon: "⏻" },
+  { id: "home",         label: "桌面端接入",   icon: "⌂" },
+  { id: "integration",  label: "CLI 接入",     icon: ">" },
+  { id: "relay",        label: "中转与API_Key", icon: "◎" },
+  { id: "models",       label: "模型管理",     icon: "◆" },
+  { id: "appearance",   label: "外观",         icon: "◐" },
+  { id: "tools",        label: "工具检测",     icon: "🔧" },
+  { id: "startup",      label: "启动项",       icon: "⏻" },
 ];
 </script>
 

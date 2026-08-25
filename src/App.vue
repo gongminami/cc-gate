@@ -5,8 +5,8 @@ import Toaster from "./components/Toaster.vue";
 import CloseToTrayDialog from "./components/CloseToTrayDialog.vue";
 import PageHome from "./components/PageHome.vue";
 import PageModels from "./components/PageModels.vue";
-import PageShell from "./components/PageShell.vue";
 import PageUsage from "./components/PageUsage.vue";
+import PageIntegration from "./components/PageIntegration.vue";
 import PageRelayKeys from "./components/PageRelayKeys.vue";
 import PageAliases from "./components/PageAliases.vue";
 import PageTools from "./components/PageTools.vue";
@@ -45,12 +45,11 @@ onMounted(async () => {
         <button class="btn" @click="refresh">重试</button>
       </div>
       <template v-else>
-        <PageHome      v-if="currentPage === 'home'"       :config="config" />
+        <PageHome      v-if="currentPage === 'home'"       :config="config" @navigate="navigate" />
         <PageModels    v-else-if="currentPage === 'models'"   :config="config" />
-        <PageShell     v-else-if="currentPage === 'shell'"    :config="config" />
+        <PageIntegration v-else-if="currentPage === 'integration'" :config="config" />
         <PageUsage     v-else-if="currentPage === 'usage'" />
         <PageRelayKeys v-else-if="currentPage === 'relay'"    :config="config" />
-        <PageAliases   v-else-if="currentPage === 'aliases'"  :config="config" />
         <PageTools     v-else-if="currentPage === 'tools'" />
         <PageStartup   v-else-if="currentPage === 'startup'"  :config="config" />
         <PageAppearance v-else-if="currentPage === 'appearance'" />

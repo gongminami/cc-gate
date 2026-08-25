@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import type { AppConfig } from "../types/models";
-import { saveConfig, addRelay, updateRelay, deleteRelay, getRelayPresets, refreshRelayPresets } from "../ipc/api";
+import { saveConfig, addRelay, updateRelay, deleteRelay, discoverRelayModels, setRelayEnabled, setRelayModelSelection, getRelayPresets, refreshRelayPresets } from "../ipc/api";
 import type { RelayPreset } from "../ipc/api";
 import { useToast } from "../composables/useToast";
 import { useAppConfig } from "../composables/useAppConfig";
@@ -81,6 +81,118 @@ async function onDeleteRelay(name: string) {
   catch (e: any) { toast.err(e?.message ?? String(e)); }
 }
 
+// 中转站模型发现：GET {relay}/v1/models，全量导入并注入两个 proxy 的发现列表
+const discovering = ref<Record<string, boolean>>({});
+
+async function onDiscoverModels(name: string) {
+  if (!props.config || discovering.value[name]) return;
+  discovering.value = { ...discovering.value, [name]: true };
+  try {
+    const cfg = await discoverRelayModels(props.config, name);
+    await refresh();
+    const n = cfg.relays.find(r => r.name === name)?.models?.length ?? 0;
+    toast.ok(`「${name}」发现 ${n} 个模型，已全部启用——新开终端即可在 /model 中切换`);
+  } catch (e: any) { toast.err(e?.message ?? String(e)); }
+  finally { discovering.value = { ...discovering.value, [name]: false }; }
+}
+
+function relayEnabled(r: { enabled?: boolean | null }): boolean { return r.enabled !== false; }
+
+async function onToggleRelay(r: { name: string; enabled?: boolean | null }) {
+  if (!props.config) return;
+  try {
+    await setRelayEnabled(props.config, r.name, !relayEnabled(r));
+    await refresh();
+    toast.ok(relayEnabled(r) ? `「${r.name}」已停用——其发现模型已从列表移除` : `「${r.name}」已启用`);
+  } catch (e: any) { toast.err(e?.message ?? String(e)); }
+}
+
+// ── 挑选：pick which discovered models appear in the pickers ──
+type RelayModel = { id: string; display_name?: string; context_window?: number; selected?: boolean };
+const pickModal = ref<{ name: string; models: RelayModel[] } | null>(null);
+const pickSearch = ref("");
+const pickBusy = ref(false);
+const pickedSet = ref<Set<string>>(new Set());
+const pickShowSelectedOnly = ref(false);
+const pickCollapsed = ref<Set<string>>(new Set());
+
+function relayCounts(r: { models?: RelayModel[] }): { picked: number; total: number } {
+  const all = r.models || [];
+  return { picked: all.filter(m => m.selected !== false).length, total: all.length };
+}
+
+function openPickModal(r: { name: string; models?: RelayModel[] }) {
+  pickModal.value = { name: r.name, models: [...(r.models || [])].sort((a, b) => a.id.localeCompare(b.id)) };
+  pickedSet.value = new Set((r.models || []).filter(m => m.selected !== false).map(m => m.id));
+  pickSearch.value = "";
+  pickShowSelectedOnly.value = false;
+  pickCollapsed.value = new Set();
+}
+
+// Overlay clicks deliberately do NOT close — only ×/取消/保存 do.
+function cancelPick() { pickModal.value = null; pickSearch.value = ""; pickShowSelectedOnly.value = false; }
+
+interface PickGroup { vendor: string; models: RelayModel[]; picked: number; }
+
+const pickGroups = computed<PickGroup[]>(() => {
+  if (!pickModal.value) return [];
+  const q = pickSearch.value.trim().toLowerCase();
+  let list = pickModal.value.models;
+  if (pickShowSelectedOnly.value) list = list.filter(m => pickedSet.value.has(m.id));
+  if (q) list = list.filter(m => m.id.toLowerCase().includes(q) || (m.display_name || "").toLowerCase().includes(q));
+  const byVendor = new Map<string, RelayModel[]>();
+  for (const m of list) {
+    const slash = m.id.indexOf("/");
+    const vendor = slash > 0 ? m.id.slice(0, slash) : "其他";
+    if (!byVendor.has(vendor)) byVendor.set(vendor, []);
+    byVendor.get(vendor)!.push(m);
+  }
+  return [...byVendor.entries()]
+    .map(([vendor, models]) => ({ vendor, models, picked: models.filter(m => pickedSet.value.has(m.id)).length }))
+    .sort((a, b) => a.vendor.localeCompare(b.vendor));
+});
+
+function togglePick(id: string) {
+  const next = new Set(pickedSet.value);
+  if (next.has(id)) next.delete(id); else next.add(id);
+  pickedSet.value = next;
+}
+
+function toggleGroupCollapse(vendor: string) {
+  const next = new Set(pickCollapsed.value);
+  if (next.has(vendor)) next.delete(vendor); else next.add(vendor);
+  pickCollapsed.value = next;
+}
+
+/** Group-level select/clear. With search or 只看已选 active it only touches VISIBLE rows. */
+function groupSelect(vendor: string, on: boolean) {
+  const g = pickGroups.value.find(x => x.vendor === vendor);
+  if (!g) return;
+  const next = new Set(pickedSet.value);
+  for (const m of g.models) { if (on) next.add(m.id); else next.delete(m.id); }
+  pickedSet.value = next;
+}
+
+function selectAllVisible() { const next = new Set(pickedSet.value); pickGroups.value.forEach(g => g.models.forEach(m => next.add(m.id))); pickedSet.value = next; }
+function invertVisible() {
+  const next = new Set(pickedSet.value);
+  pickGroups.value.forEach(g => g.models.forEach(m => { if (next.has(m.id)) next.delete(m.id); else next.add(m.id); }));
+  pickedSet.value = next;
+}
+function clearAll() { pickedSet.value = new Set(); }
+
+async function onSavePick() {
+  if (!props.config || !pickModal.value) return;
+  pickBusy.value = true;
+  try {
+    await setRelayModelSelection(props.config, pickModal.value.name, [...pickedSet.value]);
+    await refresh();
+    toast.ok(`「${pickModal.value.name}」已挑选 ${pickedSet.value.size} 个模型`);
+    cancelPick();
+  } catch (e: any) { toast.err(e?.message ?? String(e)); }
+  finally { pickBusy.value = false; }
+}
+
 const apiKeyGroups = [
   {
     label: "国内",
@@ -128,9 +240,25 @@ const apiKeyGroups = [
         <p class="desc">添加中转站（OpenRouter 等），首页即可为模型选择直连还是走中转。同一 URL 可用不同 Key 添加多次——改名字区分即可。</p>
 
         <div v-if="config && config.relays.length > 0" class="relay-list">
-          <div v-for="r in config.relays" :key="r.name" class="relay-row">
-            <div class="relay-info"><span class="relay-name">{{ r.name }}</span><span class="relay-url dim">OpenAI: {{ r.url }}</span><span v-if="r.anthropic_url" class="relay-url dim">Anthropic: {{ r.anthropic_url }}</span></div>
+          <div v-for="r in config.relays" :key="r.name" class="relay-row" :class="{ disabled: r.enabled === false }">
+            <div class="relay-info">
+              <span class="relay-name">{{ r.name }} <span v-if="r.enabled === false" class="off-badge">已停用</span></span>
+              <span class="relay-url dim">OpenAI: {{ r.url }}</span>
+              <span v-if="r.anthropic_url" class="relay-url dim">Anthropic: {{ r.anthropic_url }}</span>
+              <span v-if="(r.models || []).length > 0" class="relay-found dim">已发现 {{ relayCounts(r).total }} 个，挑选 {{ relayCounts(r).picked }} 个</span>
+            </div>
             <div class="relay-actions">
+              <button v-if="(r.models || []).length > 0" class="btn ghost" :disabled="discovering[r.name] === true" @click="onDiscoverModels(r.name)">
+                {{ discovering[r.name] ? "发现中…" : "刷新模型" }}
+              </button>
+              <button v-else class="btn ghost" :disabled="discovering[r.name] === true || !r.key" @click="onDiscoverModels(r.name)">
+                {{ discovering[r.name] ? "发现中…" : "发现模型" }}
+              </button>
+              <button v-if="(r.models || []).length > 0" class="btn ghost" @click="openPickModal(r)">挑选</button>
+              <button v-if="r.enabled !== false" class="btn ghost toggle-btn" @click="onToggleRelay(r)">
+                停用
+              </button>
+              <button v-else class="btn ghost toggle-btn" @click="onToggleRelay(r)">启用</button>
               <button class="btn ghost" @click="startEditRelay(r)">编辑</button>
               <button class="btn ghost" style="color:var(--danger)" @click="onDeleteRelay(r.name)">删除</button>
             </div>
@@ -182,6 +310,54 @@ const apiKeyGroups = [
       </div>
     </div>
 
+    <!-- 挑选模型弹窗（overlay click intentionally does not close） -->
+    <div v-if="pickModal" class="modal-overlay">
+      <div class="modal-dialog pick-dialog">
+        <div class="pick-head">
+          <div class="modal-title">挑选「{{ pickModal.name }}」的模型</div>
+          <button class="pick-close" title="关闭" @click="cancelPick">×</button>
+        </div>
+
+        <div class="pick-toolbar">
+          <input v-model="pickSearch" type="text" placeholder="搜索 id 或名称…" class="pick-search" />
+          <button class="btn ghost pick-tool" :class="{ on: pickShowSelectedOnly }" @click="pickShowSelectedOnly = !pickShowSelectedOnly">只看已选</button>
+          <button class="btn ghost pick-tool" @click="selectAllVisible()">全选</button>
+          <button class="btn ghost pick-tool" @click="invertVisible()">反选</button>
+          <button class="btn ghost pick-tool" @click="clearAll()">清空</button>
+        </div>
+
+        <div class="pick-list">
+          <div v-for="g in pickGroups" :key="g.vendor" class="pick-group">
+            <div class="pick-group-head" :class="{ collapsed: pickCollapsed.has(g.vendor) }" @click="toggleGroupCollapse(g.vendor)">
+              <span class="pg-caret">{{ pickCollapsed.has(g.vendor) ? "▸" : "▾" }}</span>
+              <span class="pg-name">{{ g.vendor }}</span>
+              <span class="pg-count dim">{{ g.picked }}/{{ g.models.length }}</span>
+              <span class="pg-actions" @click.stop>
+                <button class="pg-btn" title="全选该厂商" @click="groupSelect(g.vendor, true)">全选</button>
+                <button class="pg-btn" title="清空该厂商" @click="groupSelect(g.vendor, false)">清空</button>
+              </span>
+            </div>
+            <template v-if="!pickCollapsed.has(g.vendor)">
+              <label v-for="m in g.models" :key="m.id" class="pick-row">
+                <input type="checkbox" :checked="pickedSet.has(m.id)" @change="togglePick(m.id)" />
+                <span class="pick-id">{{ m.display_name || m.id }}</span>
+                <span class="pick-meta dim">{{ m.id }}<template v-if="m.context_window"> · {{ (m.context_window / 1000).toFixed(0) }}K</template></span>
+              </label>
+            </template>
+          </div>
+          <div v-if="pickGroups.length === 0" class="dim sec-empty" style="text-align:center;padding:20px 0">无匹配模型</div>
+        </div>
+
+        <div class="pick-foot">
+          <span class="dim">已勾选 <b>{{ pickedSet.size }}</b> / {{ pickModal.models.length }} · 未勾选的不会出现在任何工具的模型列表里</span>
+          <div class="modal-actions" style="margin:0">
+            <button class="btn" @click="cancelPick">取消</button>
+            <button class="btn primary" :disabled="pickBusy" @click="onSavePick">{{ pickBusy ? "保存中…" : "保存挑选" }}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- API 密钥 -->
     <div class="card mt12">
       <div class="card-head">API 密钥（直连）</div>
@@ -220,6 +396,10 @@ const apiKeyGroups = [
 .relay-info { display: flex; flex-direction: column; gap: 2px; }
 .relay-name { font-weight: 600; font-size: 14px; }
 .relay-url { font-family: "SF Mono", "Menlo", monospace; font-size: 13px; }
+.relay-found { font-size: 12px; color: var(--accent); }
+.relay-row.disabled .relay-info { opacity: 0.45; }
+.off-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); vertical-align: middle; margin-left: 4px; }
+.toggle-btn { min-width: 44px; }
 .relay-actions { display: flex; gap: 4px; }
 
 /* modal */
@@ -256,6 +436,55 @@ const apiKeyGroups = [
 .modal-field input:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
 .modal-presets { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 18px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* 挑选弹窗：大尺寸 + 分厂商分组 */
+.pick-dialog {
+  width: min(960px, 92vw); max-width: none; height: 85vh;
+  display: flex; flex-direction: column;
+}
+.pick-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.pick-head .modal-title { margin-bottom: 0; }
+.pick-close {
+  width: 30px; height: 30px; border: none; border-radius: var(--radius-md);
+  background: transparent; color: var(--fg-dim); font-size: 20px; line-height: 1;
+  cursor: pointer; transition: background 0.1s, color 0.1s;
+}
+.pick-close:hover { background: var(--danger-soft); color: var(--danger); }
+.pick-toolbar { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; flex-shrink: 0; }
+.pick-tool { font-size: 12px; padding: 3px 10px; white-space: nowrap; }
+.pick-tool.on { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); border-color: var(--accent); }
+.pick-search { flex: 1; box-sizing: border-box; padding: 5px 10px; height: 30px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface); color: var(--fg); font-size: 13px; outline: none; }
+.pick-search:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.pick-list { overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-md); flex: 1; min-height: 0; }
+.pick-group { border-bottom: 1px solid var(--border); }
+.pick-group:last-child { border-bottom: none; }
+.pick-group-head {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; cursor: pointer; user-select: none;
+  background: var(--surface-soft); border-bottom: 1px solid var(--border);
+}
+.pg-caret { font-size: 11px; width: 14px; color: var(--fg-dim); }
+.pg-name { font-weight: 700; font-size: 13px; text-transform: capitalize; }
+.pg-count { font-size: 12px; }
+.pg-actions { margin-left: auto; display: flex; gap: 4px; }
+.pg-btn {
+  white-space: nowrap;
+  padding: 1px 9px; font-size: 11px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--fg);
+  cursor: pointer; transition: all 0.1s;
+}
+.pg-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pick-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 34px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+.pick-row:last-child { border-bottom: none; }
+.pick-row:hover { background: var(--surface-soft); }
+.pick-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; }
+.pick-id { font-weight: 600; white-space: nowrap; }
+.pick-meta { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "SF Mono", "Menlo", monospace; }
+.pick-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding-top: 12px; flex-shrink: 0; font-size: 13px;
+}
 
 .key-input-wrap { position: relative; display: flex; align-items: center; }
 .key-input-wrap input { flex: 1; padding-right: 28px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface); color: var(--fg); outline: none; font-size: 14px; font-family: "SF Mono", "Menlo", monospace; height: 34px; padding: 4px 28px 4px 10px; transition: border-color 0.15s, box-shadow 0.15s; }

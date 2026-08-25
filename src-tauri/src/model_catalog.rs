@@ -9,6 +9,51 @@ use serde::{Deserialize, Serialize};
 use crate::paths;
 use crate::types::ModelDef;
 
+/// Build an HTTP client with the macOS system proxy applied. reqwest does NOT
+/// read macOS System Settings proxy (VPN / Clash apps set it there, not in env
+/// vars) — without this, GitHub requests fail with TLS resets on such machines.
+/// Falls back to no explicit proxy (env vars still honored by reqwest).
+fn build_http_client(timeout_secs: u64, ua: &str) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .user_agent(ua);
+    #[cfg(target_os = "macos")]
+    if let Some(proxy) = macos_system_https_proxy() {
+        tracing::info!("using macOS system HTTPS proxy for GitHub requests");
+        builder = builder.proxy(proxy);
+    }
+    builder.build().map_err(|e| format!("创建 HTTP 客户端失败: {e}"))
+}
+
+/// Read the HTTPS proxy from macOS System Settings (`scutil --proxy`).
+#[cfg(target_os = "macos")]
+fn macos_system_https_proxy() -> Option<reqwest::Proxy> {
+    let out = std::process::Command::new("scutil").arg("--proxy").output().ok()?;
+    if !out.status.success() { return None; }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (host, port) = parse_scutil_proxy(&text)?;
+    reqwest::Proxy::https(&format!("http://{host}:{port}")).ok()
+}
+
+/// Parse the `<dictionary>` block printed by `scutil --proxy` (indented `Key : value` lines).
+#[cfg(target_os = "macos")]
+fn parse_scutil_proxy(text: &str) -> Option<(String, u16)> {
+    let mut enabled = false;
+    let mut host: Option<String> = None;
+    let mut port: Option<u16> = None;
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(v) = t.strip_prefix("HTTPSEnable :") {
+            enabled = v.trim() == "1";
+        } else if let Some(v) = t.strip_prefix("HTTPSProxy :") {
+            host = Some(v.trim().trim_matches('"').to_string());
+        } else if let Some(v) = t.strip_prefix("HTTPSPort :") {
+            port = v.trim().parse().ok();
+        }
+    }
+    if enabled { Some((host?, port?)) } else { None }
+}
+
 /// Remote catalog JSON URL (raw GitHub — updated by maintainers when vendors release new models).
 const CATALOG_URL: &str =
     "https://raw.githubusercontent.com/gongminami/cc-gate/main/models-catalog.json";
@@ -40,10 +85,7 @@ pub fn read_catalog_cache() -> Option<RemoteCatalog> {
 
 /// Fetch the remote catalog from GitHub.
 pub async fn fetch_remote_catalog() -> Result<RemoteCatalog, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    let client = build_http_client(15, "cc-gate/catalog")?;
 
     let resp = client
         .get(CATALOG_URL)
@@ -161,11 +203,7 @@ struct GitHubRelease {
 /// Fetch the latest published release from GitHub Releases.
 /// `has_update` is filled by the caller (needs the local version).
 pub async fn fetch_latest_release() -> Result<AppUpdateInfo, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .user_agent("cc-gate/update-check")
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    let client = build_http_client(8, "cc-gate/update-check")?;
 
     let resp = client
         .get(RELEASES_URL)
@@ -192,6 +230,49 @@ pub async fn fetch_latest_release() -> Result<AppUpdateInfo, String> {
         release_url: rel.html_url,
         notes: rel.body.unwrap_or_default(),
     })
+}
+
+/// Discover everything a relay serves: GET {base}/models (OpenAI-compatible).
+/// Imports ALL of them — the caller stores them on the RelayConfig verbatim.
+pub async fn fetch_relay_models(base_url: &str, key: &str) -> Result<Vec<crate::types::RelayModelDef>, String> {
+    let client = build_http_client(15, "cc-gate/relay-discovery")?;
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let mut req = client.get(&url);
+    if !key.is_empty() { req = req.bearer_auth(key); }
+    let resp = req.send().await.map_err(|e| format!("网络请求失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("中转站返回 {}", resp.status()));
+    }
+    let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("响应 JSON 解析失败: {e}"))?;
+    let arr = v.get("data").and_then(|d| d.as_array())
+        .ok_or_else(|| "响应缺少 data 数组（不是 OpenAI 兼容格式）".to_string())?;
+
+    let mut out: Vec<crate::types::RelayModelDef> = Vec::new();
+    for m in arr {
+        let Some(id) = m.get("id").and_then(|i| i.as_str()) else { continue };
+        let display_name = m.get("name")
+            .or_else(|| m.get("display_name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or(id)
+            .to_string();
+        let context_window = m.get("context_length")
+            .or_else(|| m.get("context_window"))
+            .and_then(|c| c.as_u64());
+        let max_output_tokens = m.get("max_output_length")
+            .or_else(|| m.get("max_output_tokens"))
+            .and_then(|c| c.as_u64());
+        out.push(crate::types::RelayModelDef {
+            id: id.to_string(),
+            display_name,
+            context_window,
+            max_output_tokens,
+            selected: true,
+        });
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out.dedup_by(|a, b| a.id == b.id);
+    Ok(out)
 }
 
 // ── Relay presets (快速填入, cloud-managed) ──────────────────/// One "quick fill" preset for the relay-add dialog.
@@ -250,10 +331,7 @@ fn save_relay_presets_cache(presets: &[RelayPreset]) {
 /// Fetch presets from GitHub. Caller enforces the timeout budget — the dialog
 /// shows cached presets immediately and silently refreshes when this returns.
 pub async fn fetch_relay_presets() -> Result<Vec<RelayPreset>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    let client = build_http_client(3, "cc-gate/presets")?;
 
     let resp = client
         .get(RELAY_PRESETS_URL)
@@ -273,4 +351,21 @@ pub async fn fetch_relay_presets() -> Result<Vec<RelayPreset>, String> {
     }
     save_relay_presets_cache(&file.presets);
     Ok(file.presets)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::parse_scutil_proxy;
+
+    #[test]
+    fn parses_enabled_proxy() {
+        let text = "<dictionary> {\n  HTTPEnable : 1\n  HTTPPort : 17890\n  HTTPProxy : 127.0.0.1\n  HTTPSEnable : 1\n  HTTPSPort : 17890\n  HTTPSProxy : 127.0.0.1\n  SOCKSEnable : 1\n  SOCKSPort : 17890\n  SOCKSProxy : 127.0.0.1\n  ProxyAutoConfigEnable : 0\n}";
+        assert_eq!(parse_scutil_proxy(text), Some(("127.0.0.1".to_string(), 17890)));
+    }
+
+    #[test]
+    fn returns_none_when_disabled() {
+        let text = "<dictionary> {\n  HTTPEnable : 0\n  HTTPSEnable : 0\n  SOCKSEnable : 0\n  ProxyAutoConfigEnable : 0\n}";
+        assert_eq!(parse_scutil_proxy(text), None);
+    }
 }

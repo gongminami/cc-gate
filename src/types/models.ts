@@ -5,11 +5,15 @@ export interface AgentMeta {
   writes_zshrc: boolean; writes_providers: boolean; writes_catalog: boolean;
 }
 
+export interface RelayModelDef { id: string; display_name?: string; context_window?: number; }
 export interface RelayConfig {
   name: string;
   url: string;
   anthropic_url?: string;
   key: string;
+  models?: RelayModelDef[];
+  /** false = disabled: discovered models hidden from every picker */
+  enabled?: boolean | null;
 }
 
 export interface CustomAlias {

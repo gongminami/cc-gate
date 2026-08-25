@@ -126,11 +126,20 @@ fn normalize_relay_base_url(raw: &str) -> String {
         .to_string()
 }
 
+/// Prefixed display/route form for a discovered relay model:
+/// "OpenRouter/anthropic/claude-opus-4". Codex catalog uses it as slug;
+/// mimo2codex resolves it back to the raw id via models[].aliases.
+fn discovered_route_id(relay: &str, raw: &str) -> String {
+    format!("{}/{}", relay, raw)
+}
+
 pub fn write_providers(cfg: &AppConfig) -> Result<()> {
     // Collect enabled model slugs from all agents that write_providers
-    let enabled_slugs: BTreeSet<String> = agent_list().iter()
-        .filter(|a| a.writes_providers)
-        .flat_map(|a| cfg.agent_models.get(&crate::types::agent_id_key(&a.id)).cloned().unwrap_or_default())
+    // Unified-gateway rule: a model is available everywhere iff it's enabled
+    // globally (模型管理页) — no more per-agent whitelists.
+    let enabled_slugs: BTreeSet<String> = cfg.models.iter()
+        .filter(|m| m.enabled)
+        .map(|m| m.slug.clone())
         .collect();
 
     // Group models: key = (provider_id, routing)
@@ -224,6 +233,44 @@ pub fn write_providers(cfg: &AppConfig) -> Result<()> {
         entries.push(entry);
     }
 
+    // Relay-discovered models: one entry per relay carrying everything its
+    // /v1/models returned. Catalog slugs win on collision — a discovered id
+    // equal to an existing model keeps the catalog's routing.
+    for relay in &cfg.relays {
+        // Disabled relay (e.g. subscription lapsed) — its discovered models
+        // disappear from every picker until re-enabled.
+        if relay.enabled == Some(false) { continue; }
+        let discovered: Vec<&crate::types::RelayModelDef> = relay.models.iter()
+            .filter(|dm| dm.selected)
+            .collect();
+        if discovered.is_empty() { continue; }
+        entries.push(serde_json::json!({
+            "id": sanitize_provider_id(&format!("relayx-{}-discovered", &relay.name)),
+            "name": format!("{} 发现的模型", relay.name),
+            "baseUrl": normalize_relay_base_url(&relay.url),
+            "envKey": relay_env_key(&relay.name),
+            "displayPrefix": format!("{}/", relay.name),
+            "defaultModel": discovered[0].id.clone(),
+            "models": discovered.iter().map(|dm| {
+                let base = if dm.display_name.is_empty() { dm.id.as_str() } else { dm.display_name.as_str() };
+                let mut mj = serde_json::json!({
+                    // RAW upstream id — this is what gets sent to the relay.
+                    // The relay rejects prefixed names (400 invalid model ID).
+                    "id": dm.id,
+                    // "OpenRouter - Claude Opus 4": relay name first so the same
+                    // relay's models sort together in the picker.
+                    "displayName": format!("{} - {}", relay.name, base),
+                    // mimo2codex alias: Codex catalog uses the prefixed form as
+                    // its slug; this maps it back to the raw upstream id.
+                    "aliases": [discovered_route_id(&relay.name, &dm.id)],
+                });
+                if let Some(cw) = dm.context_window { mj["contextWindow"] = serde_json::json!(cw); }
+                if let Some(mo) = dm.max_output_tokens { mj["maxOutputTokens"] = serde_json::json!(mo); }
+                mj
+            }).collect::<Vec<_>>(),
+        }));
+    }
+
     let content = serde_json::to_string_pretty(&serde_json::json!({ "providers": entries }))?;
     write_if_changed(&paths::providers_json(), &content)
 }
@@ -249,7 +296,8 @@ pub fn validate_alias_name(name: &str, cfg: &AppConfig, ignore_self: Option<&str
     }
 
     let mut reserved: std::collections::HashSet<String> =
-        ["claude", "codex", "aider"].iter().map(|s| s.to_string()).collect();
+        ["claude", "codex", "aider", "claude-cc-gate", "codex-cc-gate", "aider-cc-gate", "hermes-cc-gate", "pi-cc-gate"]
+            .iter().map(|s| s.to_string()).collect();
     for m in crate::types::builtin_models() {
         for prefix in ["claude", "codex", "aider"] {
             reserved.insert(format!("{}-{}", prefix, short(&m.slug)));
@@ -279,10 +327,21 @@ fn build_one_route(a: &crate::types::CustomAlias, cfg: &AppConfig) -> Option<ser
     // direct → only models of that provider (other slugs would 404 at the vendor);
     // relay → every enabled model (relays forward anything they carry).
     let enabled: Vec<&ModelDef> = cfg.models.iter().filter(|m| m.enabled).collect();
-    let source_models: Vec<&str> = if a.source == "direct" {
-        enabled.iter().filter(|m| m.provider == model.provider).map(|m| m.slug.as_str()).collect()
+    let source_models: Vec<String> = if a.source == "direct" {
+        enabled.iter().filter(|m| m.provider == model.provider).map(|m| m.slug.clone()).collect()
     } else {
-        enabled.iter().map(|m| m.slug.as_str()).collect()
+        // Relay: every enabled model + everything discovered from that relay
+        // (raw upstream ids — prefixed names would 400 at the relay).
+        let relay_name = &a.source[6..];
+        let mut v: Vec<String> = enabled.iter().map(|m| m.slug.clone()).collect();
+        if let Some(r) = cfg.relays.iter().find(|r| r.name == relay_name) {
+            for dm in &r.models {
+                v.push(dm.id.clone());
+                // prefixed display form (PI/Hermes list it this way)
+                v.push(format!("{}/{}", r.name, dm.id));
+            }
+        }
+        v
     };
 
     let (base_url, env_key, anthropic_native) = match (a.tool.as_str(), a.source.as_str()) {
@@ -380,9 +439,16 @@ fn merge_pi_models(
     };
 
     // ① Base provider from the homepage matrix
-    let pi_slugs = cfg.agent_models.get(&crate::types::agent_id_key(&crate::types::AgentId::Pi))
-        .cloned().unwrap_or_default();
-    let base_models: Vec<serde_json::Value> = pi_slugs.iter()
+    // Same-vendor models (direct or via a relay) must sort together — group by
+    // provider, then priority, then slug (mirrors providers.json ordering).
+    let mut enabled_models: Vec<&ModelDef> = cfg.models.iter().filter(|m| m.enabled).collect();
+    enabled_models.sort_by(|a, b| {
+        a.provider.cmp(&b.provider)
+            .then(a.priority.cmp(&b.priority))
+            .then(a.slug.cmp(&b.slug))
+    });
+    let pi_slugs: Vec<String> = enabled_models.iter().map(|m| m.slug.clone()).collect();
+    let mut base_models: Vec<serde_json::Value> = pi_slugs.iter()
         .filter_map(|s| cfg.models.iter().find(|m| &m.slug == s && m.enabled))
         .map(|m| serde_json::json!({
             "id": m.slug,
@@ -392,6 +458,30 @@ fn merge_pi_models(
             "maxTokens": m.max_output_tokens,
         }))
         .collect();
+    // Relay-discovered models (picked, enabled relays): same routing via
+    // chat-proxy, so PI's list covers them too. Named with the relay prefix.
+    for relay in &cfg.relays {
+        if relay.enabled == Some(false) { continue; }
+        for dm in &relay.models {
+            if !dm.selected || pi_slugs.contains(&dm.id)
+                || base_models.iter().any(|mj| mj["id"] == serde_json::json!(dm.id)) { continue; }
+            let base = if dm.display_name.is_empty() { dm.id.as_str() } else { dm.display_name.as_str() };
+            let mut mj = serde_json::json!({
+                // Prefixed id: PI shows ids verbatim; chat-proxy resolves the
+                // prefix back to the raw upstream name when forwarding.
+                "id": format!("{}/{}", relay.name, dm.id),
+                "name": format!("{} - {}", relay.name, base),
+                "reasoning": true,
+            });
+            if let Some(cw) = dm.context_window {
+                mj["contextWindow"] = serde_json::json!(cw);
+            }
+            // Never reuse the context window here — relays reject
+            // max_tokens above their output cap (SenseNova 65536).
+            mj["maxTokens"] = serde_json::json!(dm.max_output_tokens.unwrap_or(16384));
+            base_models.push(mj);
+        }
+    }
     if base_models.is_empty() {
         providers.remove("ccgate");
     } else {
@@ -595,16 +685,9 @@ fn preserve_user_sections(existing_path: &std::path::Path, generated: &str, keys
 
 pub fn write_model_catalog(cfg: &AppConfig) -> Result<()> {
     // Merge models from both Codex CLI and Codex Desktop — both share the same proxy (mimo2codex)
-    let mut codex_slugs: BTreeSet<String> = cfg.agent_models
-        .get("codex_desktop").cloned().unwrap_or_default()
-        .into_iter().collect();
-    codex_slugs.extend(
-        cfg.agent_models.get("codex_cli").cloned().unwrap_or_default()
-    );
-    let codex_set: BTreeSet<&str> = codex_slugs.iter().map(|s| s.as_str()).collect();
-
-    let models: Vec<serde_json::Value> = cfg.models.iter()
-        .filter(|m| codex_set.contains(m.slug.as_str()))
+    // Unified-gateway rule: the Codex catalog lists every globally-enabled model.
+    let mut models: Vec<serde_json::Value> = cfg.models.iter()
+        .filter(|m| m.enabled)
         .map(|m| serde_json::json!({
             "slug": m.slug, "display_name": m.display_name,
             "context_window": m.context_window, "max_context_window": m.context_window,
@@ -633,6 +716,49 @@ pub fn write_model_catalog(cfg: &AppConfig) -> Result<()> {
             "upgrade": null
         }))
         .collect();
+
+    // Relay-discovered models (enabled relay + picked in 挑选): appended so the
+    // Codex /model list shows them too. slug = raw relay id — matches the
+    // providers.json entry, so requests route to the relay unchanged.
+    let known_slugs: BTreeSet<String> = cfg.models.iter().map(|m| m.slug.clone()).collect();
+    for relay in &cfg.relays {
+        if relay.enabled == Some(false) { continue; }
+        for dm in &relay.models {
+            if !dm.selected || known_slugs.contains(&dm.id)
+                || models.iter().any(|mj| mj["slug"] == serde_json::json!(dm.id)) { continue; }
+            models.push(serde_json::json!({
+                // Prefixed slug → leads with the relay name in Codex's /model list;
+                // resolved to the raw upstream id via providers.json aliases.
+                "slug": discovered_route_id(&relay.name, &dm.id),
+                "display_name": format!("{} - {}", relay.name,
+                    if dm.display_name.is_empty() { dm.id.as_str() } else { dm.display_name.as_str() }),
+                "context_window": dm.context_window.unwrap_or(200000),
+                "max_context_window": dm.context_window.unwrap_or(200000),
+                "effective_context_window_percent": 95,
+                "default_reasoning_level": "medium",
+                "default_reasoning_summary": "none", "input_modalities": ["text"],
+                "supported_reasoning_levels": [
+                    {"effort":"none","description":"Disable Thinking"},
+                    {"effort":"low","description":"Low"},
+                    {"effort":"medium","description":"Medium"},
+                    {"effort":"high","description":"High"}
+                ],
+                "supports_reasoning_summaries": false,
+                "supports_parallel_tool_calls": false, "supports_search_tool": false,
+                "support_verbosity": false, "supported_in_api": true,
+                "shell_type": "shell_command", "apply_patch_tool_type": "freeform",
+                "visibility": "list", "priority": 9000,
+                "additional_speed_tiers": [], "service_tiers": [],
+                "experimental_supported_tools": [],
+                "truncation_policy": {"mode":"bytes","limit":10000},
+                "base_instructions": format!("You are Codex, a coding agent powered by {} (via {}). You help the user with programming tasks. Read the codebase first, ask questions when needed, and implement solutions directly. Prefer existing patterns and keep changes minimal.", dm.display_name, relay.name),
+                "description": format!("{} via CC-Gate relay {}", dm.display_name, relay.name),
+                "default_verbosity": "low",
+                "supports_image_detail_original": false,
+                "upgrade": null
+            }));
+        }
+    }
 
     let content = serde_json::to_string_pretty(&serde_json::json!({ "models": models }))?;
     write_if_changed(&paths::codex_model_catalog_json(), &content)
@@ -835,81 +961,80 @@ fn generate_powershell_functions(cfg: &AppConfig) -> String {
 }
 
 fn gen_aliases_impl(cfg: &AppConfig, out: &mut String, powershell: bool) {
-    // ── Codex ──────────────────────────────────────────────
-    let codex_slugs = cfg.agent_models.get("codex_cli").cloned().unwrap_or_default();
-    if !codex_slugs.is_empty() {
-        let port = cfg.proxy_ports.mimo2codex;
-        // Native alias: "codex" — official OpenAI (requires `codex login`), no CC-Gate env
+    // Unified gateway commands — ONE per CLI tool. Opening one exposes every
+    // usable model (official passthrough + direct vendors + relay-discovered);
+    // switching happens inside the tool's own /model picker. This replaces the
+    // old per-model alias farms (claude-ds, codex-glm, ...).
+    let enabled: Vec<&ModelDef> = cfg.models.iter().filter(|m| m.enabled).collect();
+    let cport = cfg.proxy_ports.claude_proxy;
+    let mport = cfg.proxy_ports.mimo2codex;
+    let hport = cfg.proxy_ports.chat_proxy;
+
+    // Bare native aliases — official direct connections, untouched by CC-Gate.
+    if powershell {
+        out.push_str("function codex { & (Get-Command codex -CommandType Application) --dangerously-bypass-approvals-and-sandbox -c model_provider=\"openai\" -c model=\"gpt-5.5\" $args }\n");
+        out.push_str("function claude { $env:ANTHROPIC_BASE_URL='https://api.anthropic.com'; & (Get-Command claude -CommandType Application) --dangerously-skip-permissions --permission-mode bypassPermissions $args }\n");
+        out.push_str("function aider { & (Get-Command aider -CommandType Application) $args }\n");
+    } else {
+        out.push_str("alias codex='\\codex --dangerously-bypass-approvals-and-sandbox -c model_provider=\"openai\" -c model=\"gpt-5.5\"'\n");
+        out.push_str("alias claude='ANTHROPIC_BASE_URL=\"https://api.anthropic.com\" \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n");
+        out.push_str("alias aider='\\aider'\n");
+    }
+
+    // claude-cc-gate — gateway discovery lists everything; tiers resolve inside
+    // Claude Code itself (gateway mode), no per-model env needed.
+    if powershell {
+        out.push_str(&format!(
+            "function claude-cc-gate {{ $env:ANTHROPIC_BASE_URL='http://127.0.0.1:{cport}'; $env:ANTHROPIC_AUTH_TOKEN='proxy'; $env:CLAUDE_CODE_USE_GATEWAY='1'; $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY='1'; claude --dangerously-skip-permissions --permission-mode bypassPermissions }}\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "alias claude-cc-gate='ANTHROPIC_BASE_URL=\"http://127.0.0.1:{cport}\" \\\n  ANTHROPIC_AUTH_TOKEN=proxy \\\n  CLAUDE_CODE_USE_GATEWAY=1 \\\n  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \\\n  \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n"
+        ));
+    }
+
+    // codex-cc-gate — full catalog via mimo2codex; /model switches inside Codex.
+    if let Some(first) = enabled.first() {
+        let slug = first.slug.as_str();
         if powershell {
-            out.push_str("function codex { & (Get-Command codex -CommandType Application) --dangerously-bypass-approvals-and-sandbox -c model_provider=\"openai\" -c model=\"gpt-5.5\" $args }\n");
+            out.push_str(&format!(
+                "function codex-cc-gate {{ $env:CC_GATE_MODEL='{slug}'; $env:OPENAI_API_KEY='proxy'; codex --dangerously-bypass-approvals-and-sandbox -c model_provider='custom' -c model='{slug}' -c base_url='http://127.0.0.1:{mport}/v1' -c requires_openai_auth='false' }}\n"
+            ));
         } else {
-            out.push_str("alias codex='\\codex --dangerously-bypass-approvals-and-sandbox -c model_provider=\"openai\" -c model=\"gpt-5.5\"'\n");
-        }
-        // Per-model aliases: codex-{short}
-        for slug in &codex_slugs {
-            if let Some(m) = cfg.models.iter().find(|m| &m.slug == slug) {
-                let aname = codex_alias(slug);
-                out.push_str(&codex_alias_line(&aname, m, port, powershell, cfg));
-            }
+            out.push_str(&format!(
+                "alias codex-cc-gate='CC_GATE_MODEL=\"{slug}\" OPENAI_API_KEY=proxy \\codex --dangerously-bypass-approvals-and-sandbox -c model_provider=\"custom\" -c model=\"{slug}\" -c base_url=\"http://127.0.0.1:{mport}/v1\" -c requires_openai_auth=\"false\"'\n"
+            ));
         }
     }
 
-    // ── Claude CLI ──────────────────────────────────────────
-    let claude_slugs = cfg.agent_models.get("claude_cli").cloned().unwrap_or_default();
-    if !claude_slugs.is_empty() {
-        // Native alias: "claude" — official Anthropic (user's own login/key), no CC-Gate env
+    // aider-cc-gate — Aider has no in-session switcher; starts on the first
+    // enabled model (use the 高级 multi-window aliases to pin others).
+    if let Some(first) = enabled.first() {
+        let slug = first.slug.as_str();
         if powershell {
-            out.push_str("function claude { $env:ANTHROPIC_BASE_URL='https://api.anthropic.com'; & (Get-Command claude -CommandType Application) --dangerously-skip-permissions --permission-mode bypassPermissions $args }\n");
+            out.push_str(&format!(
+                "function aider-cc-gate {{ $env:CC_GATE_MODEL='{slug}'; $env:OPENAI_API_BASE='http://127.0.0.1:{hport}/v1'; $env:OPENAI_API_KEY='proxy'; aider --model openai/{slug} }}\n"
+            ));
         } else {
-            out.push_str("alias claude='ANTHROPIC_BASE_URL=\"https://api.anthropic.com\" \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n");
-        }
-        // Per-model aliases: claude-{short}
-        for slug in &claude_slugs {
-            let aname = claude_alias(slug);
-            let cm = format!("claude-{}", slug);
-            let port = cfg.proxy_ports.claude_proxy;
-            if powershell {
-                out.push_str(&format!(
-                    "function {} {{ $env:CC_GATE_MODEL='{slug}'; $env:ANTHROPIC_BASE_URL='http://127.0.0.1:{port}'; $env:ANTHROPIC_AUTH_TOKEN='proxy'; $env:ANTHROPIC_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_OPUS_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_SONNET_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_HAIKU_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_FABLE_MODEL='{cm}'; $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY='1'; claude --dangerously-skip-permissions --permission-mode bypassPermissions }}\n",
-                    aname, slug=slug, port=port, cm=cm,
-                ));
-            } else {
-                out.push_str(&format!(
-                    "alias {aname}='CC_GATE_MODEL=\"{slug}\" \\\n  ANTHROPIC_BASE_URL=\"http://127.0.0.1:{port}\" \\\n  ANTHROPIC_AUTH_TOKEN=proxy \\\n  ANTHROPIC_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_OPUS_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_SONNET_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_HAIKU_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_FABLE_MODEL=\"{cm}\" \\\n  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \\\n  \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n",
-                    aname=aname, slug=slug, port=port, cm=cm,
-                ));
-            }
+            out.push_str(&format!(
+                "alias aider-cc-gate='CC_GATE_MODEL=\"{slug}\" OPENAI_API_BASE=http://127.0.0.1:{hport}/v1 OPENAI_API_KEY=proxy \\aider --model openai/{slug}'\n"
+            ));
         }
     }
 
-    // ── Aider ──────────────────────────────────────────────
-    let aider_slugs = cfg.agent_models.get("aider").cloned().unwrap_or_default();
-    if !aider_slugs.is_empty() {
-        // Native alias: "aider" — official default (user's own OpenAI key), no CC-Gate env
-        if powershell {
-            out.push_str("function aider { & (Get-Command aider -CommandType Application) $args }\n");
-        } else {
-            out.push_str("alias aider='\\aider'\n");
-        }
-        // Per-model: aider-{short}
-        for slug in &aider_slugs {
-            let aname = aider_alias(slug);
-            let port = cfg.proxy_ports.chat_proxy;
-            if powershell {
-                out.push_str(&format!(
-                    "function {} {{ $env:CC_GATE_MODEL='{}'; $env:OPENAI_API_BASE='http://127.0.0.1:{port}/v1'; $env:OPENAI_API_KEY='proxy'; aider --model openai/{} }}\n",
-                    aname, slug, slug
-                ));
-            } else {
-                out.push_str(&format!(
-                    "alias {}='CC_GATE_MODEL=\"{}\" OPENAI_API_BASE=http://127.0.0.1:{}/v1 OPENAI_API_KEY=proxy \\aider --model openai/{}'\n",
-                    aname, slug, port, slug
-                ));
-            }
-        }
+    // hermes-cc-gate — Hermes takes --provider/--model flags natively.
+    if let Some(first) = enabled.first() {
+        let slug = first.slug.as_str();
+        out.push_str(&format!(
+            "alias hermes-cc-gate='\\hermes --provider ccgate -m {slug}'\n"
+        ));
     }
 
-    // ── Custom aliases (别名页) ─────────────────────────────
+    // pi-cc-gate — PI is config-driven (~/.pi/agent/models.json is auto-written
+    // with every enabled model); the command is a named entry point.
+    out.push_str("alias pi-cc-gate='\\pi'\n");
+
+// ── Custom aliases (别名页) ─────────────────────────────
     // User-defined tool × model × source shortcuts. Token `ccgate-<name>` lets
     // the local proxies pick a per-window upstream, so two terminals can run
     // the same tool+model via different sources simultaneously.
@@ -1051,8 +1176,7 @@ fn clean_stale_bat_files() {
 // ── Hermes config.yaml ─────────────────────────────────────
 
 pub fn write_hermes_config(cfg: &AppConfig) -> Result<()> {
-    let slugs: Vec<String> = cfg.agent_models
-        .get("hermes").cloned().unwrap_or_default();
+    let slugs: Vec<String> = cfg.models.iter().filter(|m| m.enabled).map(|m| m.slug.clone()).collect();
 
     let path = paths::hermes_config_yaml();
     let src = if path.exists() { fs::read_to_string(&path).unwrap_or_default() } else { String::new() };
@@ -1075,6 +1199,25 @@ pub fn write_hermes_config(cfg: &AppConfig) -> Result<()> {
             mm.insert("context_length".into(), serde_yaml::Value::Number((m.context_window as i64).into()));
             mm.insert("name".into(), serde_yaml::Value::String(format!("{} (CC-Gate)", m.display_name)));
             models_map.insert(serde_yaml::Value::String(slug.clone()), serde_yaml::Value::Mapping(mm));
+        }
+    }
+    // Relay-discovered models (picked ones, enabled relays only): chat-proxy
+    // routes them the same way, so Hermes can switch to them via /model too.
+    let known: std::collections::BTreeSet<String> = slugs.iter().cloned().collect();
+    for relay in &cfg.relays {
+        if relay.enabled == Some(false) { continue; }
+        for dm in &relay.models {
+            if !dm.selected || known.contains(&dm.id) { continue; }
+            let base = if dm.display_name.is_empty() { dm.id.as_str() } else { dm.display_name.as_str() };
+            let mut mm = serde_yaml::Mapping::new();
+            if let Some(cw) = dm.context_window {
+                mm.insert("context_length".into(), serde_yaml::Value::Number((cw as i64).into()));
+            }
+            mm.insert("name".into(), serde_yaml::Value::String(format!("{} - {}", relay.name, base)));
+            // Prefixed key: Hermes lists keys verbatim; chat-proxy resolves.
+            models_map.insert(
+                serde_yaml::Value::String(format!("{}/{}", relay.name, dm.id)),
+                serde_yaml::Value::Mapping(mm));
         }
     }
 
@@ -1131,8 +1274,7 @@ pub fn write_hermes_config(cfg: &AppConfig) -> Result<()> {
 // ── OpenClaw openclaw.json ──────────────────────────────────
 
 pub fn write_openclaw_config(cfg: &AppConfig) -> Result<()> {
-    let slugs: Vec<String> = cfg.agent_models
-        .get("openclaw").cloned().unwrap_or_default();
+    let slugs: Vec<String> = cfg.models.iter().filter(|m| m.enabled).map(|m| m.slug.clone()).collect();
     if slugs.is_empty() { return Ok(()); }
 
     let path = paths::openclaw_config_json();
@@ -1194,8 +1336,7 @@ pub fn write_openclaw_config(cfg: &AppConfig) -> Result<()> {
 /// provider (chat-proxy port) into the existing JSONC doc and point the default
 /// model at it. Preserves any other providers (e.g. built-in zhipuai).
 pub fn write_opencode_config(cfg: &AppConfig) -> Result<()> {
-    let slugs: Vec<String> = cfg.agent_models
-        .get("opencode").cloned().unwrap_or_default();
+    let slugs: Vec<String> = cfg.models.iter().filter(|m| m.enabled).map(|m| m.slug.clone()).collect();
     if slugs.is_empty() { return Ok(()); }
 
     let path = paths::opencode_config_path();
@@ -1333,12 +1474,12 @@ fn custom_claude_line(a: &crate::types::CustomAlias, cfg: &AppConfig, powershell
     let token = format!("ccgate-{}", a.name);
     if powershell {
         format!(
-            "function {name} {{ $env:ANTHROPIC_BASE_URL='http://127.0.0.1:{port}'; $env:ANTHROPIC_AUTH_TOKEN='{token}'; $env:ANTHROPIC_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_OPUS_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_SONNET_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_HAIKU_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_FABLE_MODEL='{cm}'; $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY='1'; claude --dangerously-skip-permissions --permission-mode bypassPermissions }}\n",
+            "function {name} {{ $env:ANTHROPIC_BASE_URL='http://127.0.0.1:{port}'; $env:ANTHROPIC_AUTH_TOKEN='{token}'; $env:ANTHROPIC_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_OPUS_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_SONNET_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_HAIKU_MODEL='{cm}'; $env:ANTHROPIC_DEFAULT_FABLE_MODEL='{cm}'; $env:CLAUDE_CODE_USE_GATEWAY='1'; $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY='1'; claude --dangerously-skip-permissions --permission-mode bypassPermissions }}\n",
             name = a.name, port = port, token = token, cm = cm,
         )
     } else {
         format!(
-            "alias {name}='ANTHROPIC_BASE_URL=\"http://127.0.0.1:{port}\" \\\n  ANTHROPIC_AUTH_TOKEN={token} \\\n  ANTHROPIC_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_OPUS_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_SONNET_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_HAIKU_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_FABLE_MODEL=\"{cm}\" \\\n  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \\\n  \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n",
+            "alias {name}='ANTHROPIC_BASE_URL=\"http://127.0.0.1:{port}\" \\\n  ANTHROPIC_AUTH_TOKEN={token} \\\n  ANTHROPIC_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_OPUS_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_SONNET_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_HAIKU_MODEL=\"{cm}\" \\\n  ANTHROPIC_DEFAULT_FABLE_MODEL=\"{cm}\" \\\n  CLAUDE_CODE_USE_GATEWAY=1 \\\n  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \\\n  \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n",
             name = a.name, port = port, token = token, cm = cm,
         )
     }
@@ -1489,23 +1630,29 @@ mod tests {
         assert!(!out.contains("alias aider='CC_GATE_MODEL="),
             "bare aider must not inject CC_GATE_MODEL:\n{out}");
 
-        // native_responses codex model → direct to provider Responses API, not via :8688.
-        let codex_ds = out.lines().find(|l| l.starts_with("alias codex-ds='")).unwrap();
-        assert!(codex_ds.contains("base_url=\"https://api.deepseek.com/v1\""),
-            "codex-ds must connect directly to DeepSeek:\n{codex_ds}");
-        assert!(!codex_ds.contains("127.0.0.1:8688"),
-            "codex-ds must NOT route via mimo2codex :8688:\n{codex_ds}");
+        // Unified gateway commands — one per tool, no per-model farms anymore.
+        assert!(out.contains("alias claude-cc-gate="), "claude-cc-gate must exist:\n{out}");
+        assert!(out.contains("CLAUDE_CODE_USE_GATEWAY=1"), "claude-cc-gate must enable gateway mode:\n{out}");
+        assert!(out.contains("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1"), "discovery must be on:\n{out}");
+        let cc: String = {
+            let lines = out.lines().collect::<Vec<_>>();
+            let i = lines.iter().position(|l| l.starts_with("alias claude-cc-gate='")).unwrap();
+            lines[i..].join("\n")
+        };
+        assert!(cc.contains("ANTHROPIC_AUTH_TOKEN=proxy"), "gateway alias must use proxy token:\n{cc}");
+        assert!(cc.contains("\\claude"), "gateway alias must invoke claude:\n{cc}");
 
-        // Non-native codex model → still routed through mimo2codex :8688.
-        let codex_glm = out.lines().find(|l| l.starts_with("alias codex-glm='")).unwrap();
-        assert!(codex_glm.contains("base_url=\"http://127.0.0.1:8688/v1\""),
-            "codex-glm must stay proxied via :8688:\n{codex_glm}");
-        assert!(codex_glm.contains("requires_openai_auth=\"false\""),
-            "codex-glm proxy alias must be zero-auth:\n{codex_glm}");
+        // codex-cc-gate pins the first ENABLED model as default; routes via mimo2codex.
+        let cg = out.lines().find(|l| l.starts_with("alias codex-cc-gate='")).unwrap();
+        assert!(cg.contains("-c base_url=\"http://127.0.0.1:8688/v1\""), "codex gateway must route via mimo2codex:\n{cg}");
+        assert!(cg.contains("requires_openai_auth=\"false\""), "codex gateway must be zero-auth:\n{cg}");
+        // deepseek-v4-pro is enabled in this fixture → it is the pinned default.
+        assert!(cg.contains("-c model=\"deepseek-v4-pro\""), "first enabled model becomes default:\n{cg}");
 
-        // Claude/aider suffixed aliases still route through their own proxies (unaffected by native_responses).
-        assert!(out.contains("alias claude-ds='CC_GATE_MODEL="), "claude-ds must stay proxied:\n{out}");
-        assert!(out.contains("alias aider-ds='CC_GATE_MODEL="), "aider-ds must stay proxied:\n{out}");
+        // No per-model alias farms left behind.
+        assert!(!out.contains("alias codex-ds='"), "per-model codex aliases are gone:\n{out}");
+        assert!(!out.contains("alias claude-ds='CC_GATE_MODEL="), "per-model claude aliases are gone:\n{out}");
+        assert!(!out.contains("alias aider-ds='CC_GATE_MODEL="), "per-model aider aliases are gone:\n{out}");
 
         // Helpful when eyeballing generated output.
         println!("\n=== generated aliases ===\n{out}");
@@ -1697,6 +1844,8 @@ mod custom_alias_tests {
         cfg.relays.push(RelayConfig {
             name: "商汤".into(), url: "https://relay.example.com/v1/chat/completions".into(),
             anthropic_url: None, key: "sk-relay-test".into(),
+            enabled: None,
+        models: vec![],
         });
         let mut out = String::new();
         gen_aliases_impl(&cfg, &mut out, false);
@@ -1711,6 +1860,8 @@ mod custom_alias_tests {
         cfg.relays.push(RelayConfig {
             name: "r1".into(), url: "https://r1.example.com/v1/".into(),
             anthropic_url: Some("https://r1.example.com/anthropic".into()), key: "k1".into(),
+            enabled: None,
+        models: vec![],
         });
         cfg.custom_aliases = vec![
             CustomAlias { name: "ca".into(), tool: "claude_cli".into(), model: "deepseek-v4-flash".into(), source: "direct".into() },
@@ -1777,6 +1928,8 @@ mod tier_pi_tests {
         cfg.relays.push(crate::types::RelayConfig {
             name: "r1".into(), url: "https://r1.example.com/v1".into(),
             anthropic_url: None, key: "k".into(),
+            enabled: None,
+        models: vec![],
         });
         cfg.custom_aliases = vec![CustomAlias {
             name: "dsf".into(), tool: "pi".into(),
@@ -1798,7 +1951,10 @@ mod tier_pi_tests {
         assert_eq!(base["api"], "openai-completions");
         let ids: Vec<&str> = base["models"].as_array().unwrap()
             .iter().map(|m| m["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, vec!["deepseek-v4-flash"]);
+        // Unified-gateway rule: pi sees every globally-enabled model (the
+        // fixture's builtin catalog), not a per-agent whitelist slice.
+        assert!(ids.contains(&"deepseek-v4-flash"), "enabled models must be present: {ids:?}");
+        assert!(ids.len() > 1, "pi now lists the full enabled set: {ids:?}");
 
         // ② per-alias provider speaks anthropic-messages via :8689 with token header
         let al = merged.pointer("/providers/ccgate-dsf").expect("alias provider");
@@ -1827,6 +1983,8 @@ mod opencode_hermes_tests {
         cfg.relays.push(crate::types::RelayConfig {
             name: "r1".into(), url: "https://r1.example.com/v1".into(),
             anthropic_url: None, key: "k".into(),
+            enabled: None,
+        models: vec![],
         });
         cfg
     }

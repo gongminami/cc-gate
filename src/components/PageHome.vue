@@ -9,7 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 
 const toast = useToast();
 const { config, refresh: refreshConfig } = useAppConfig();
-const { info: updateInfo, checking: checkingAppUpdate, checkNow, dismiss: dismissUpdate } = useAppUpdate();
+const { info: updateInfo, dismiss: dismissUpdate } = useAppUpdate();
 
 const agents = ref<AgentMeta[]>([]);
 const selectedAgentId = ref<AgentId | null>(null);
@@ -26,6 +26,10 @@ const modelRouting = ref<Record<string, string>>({});
 
 const selectedAgent = computed(() => agents.value.find(a => a.id === selectedAgentId.value));
 const downProxies = computed(() => proxyStatuses.value.filter((s: any) => !s.running));
+
+const managedAgents = computed(() => agents.value.filter(a =>
+  a.id === "codex_desktop" || a.id === "claude_desktop"));
+
 
 async function loadProxyStatus() {
   try { proxyStatuses.value = await getProxyStatus(); } catch { /* not ready */ }
@@ -180,23 +184,12 @@ async function onCheckUpdates() {
   }
 }
 
-async function onCheckAppUpdate() {
-  checkingAppUpdate.value = true;
-  try {
-    const r = await checkNow();
-    if (!r) { toast.err("检查失败（网络或 GitHub 不可达）"); return; }
-    if (r.has_update) { toast.ok(`发现新版本 v${r.latest_version}（当前 v${r.current_version}）`); }
-    else { toast.ok("当前已是最新版本"); }
-  } finally {
-    checkingAppUpdate.value = false;
-  }
-}
-
 let unlisten: (() => void) | null = null;
 onMounted(async () => {
   agents.value = await getAgentList();
   initWorking();
-  if (agents.value.length > 0) selectedAgentId.value = agents.value[0].id;
+  const firstManaged = managedAgents.value[0];
+  if (firstManaged) selectedAgentId.value = firstManaged.id;
 
   // Load proxy status
   await loadProxyStatus();
@@ -221,7 +214,8 @@ watch(config, () => { if (config.value) { initWorking(); } });
 <template>
   <section class="page">
     <header class="page-header">
-      <h2>首页</h2>
+      <h2>桌面端接入</h2>
+      <p class="page-desc dim">管理代理进程与桌面端工具（Codex 桌面端 / Claude 桌面端）的模型分配。 命令行工具在「CLI 接入」页获取统一命令。</p>
     </header>
 
     <!-- App update banner -->
@@ -243,10 +237,11 @@ watch(config, () => { if (config.value) { initWorking(); } });
       </span>
     </div>
 
+    <!-- Desktop & config-file driven tools: full matrix -->
     <div class="home-layout">
       <!-- Agent list -->
-      <div class="agent-col">
-        <div v-for="agent in agents" :key="agent.id"
+      <div class="agent-col"><div class="agent-col-title dim">桌面端与配置文件工具</div>
+        <div v-for="agent in managedAgents" :key="agent.id"
           class="agent-item" :class="{ active: selectedAgentId === agent.id }"
           @click="selectAgent(agent.id)">
           <div class="agent-info">
@@ -258,14 +253,10 @@ watch(config, () => { if (config.value) { initWorking(); } });
 
       <!-- Model list with routing dropdown -->
       <div class="model-col">
-        <template v-if="selectedAgent">
+        <template v-if="managedAgents.length > 0 && selectedAgent">
           <div class="model-header">
             <span>{{ selectedAgent.name }} 的模型</span>
             <span class="dim">({{ workingModels[selectedAgent.id]?.length ?? 0 }}/{{ allModels.length }})</span>
-            <button class="update-btn" :disabled="checkingAppUpdate" @click="onCheckAppUpdate">
-              <span v-if="checkingAppUpdate" class="update-spin">⟳</span>
-              <span v-else>检查更新</span>
-            </button>
             <button class="update-btn" :disabled="checking" @click="onCheckUpdates">
               <span v-if="checking" class="update-spin">⟳</span>
               <span v-else>模型目录更新</span>
@@ -305,7 +296,7 @@ watch(config, () => { if (config.value) { initWorking(); } });
             </select>
           </div>
         </template>
-        <div v-else class="dim" style="padding:40px;text-align:center">← 选择左侧 Agent</div>
+        <div v-else class="dim" style="padding:40px;text-align:center">← 选择左侧工具</div>
       </div>
     </div>
 
@@ -313,6 +304,11 @@ watch(config, () => { if (config.value) { initWorking(); } });
 </template>
 
 <style scoped>
+.agent-col-title { padding: 10px 14px 4px; font-size: 12px; }
+.page-header { display: block; }
+.page-header h2 { margin: 0; }
+.page-desc { font-size: 13px; line-height: 1.7; margin: 8px 0 0; text-align: left; }
+
 /* ── Proxy warning banner ───────────────────── */
 .proxy-warn {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;

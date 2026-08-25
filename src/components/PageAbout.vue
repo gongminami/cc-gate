@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { getAppLogTail, getAppVersion, copyToClipboard } from "../ipc/api";
+import { getAppLogTail, getAppVersion, copyToClipboard, openUrl } from "../ipc/api";
+import { useAppUpdate } from "../composables/useAppUpdate";
+import { useToast } from "../composables/useToast";
+
+const toast = useToast();
+const { info: updateInfo, checking: checkingUpdate, checkNow, dismiss: dismissUpdate } = useAppUpdate();
 
 // Read the real version from the bundle instead of hardcoding it — a stale
 // literal here is what makes "did my fix ship?" unanswerable.
@@ -8,6 +13,18 @@ const version = ref("…");
 onMounted(async () => {
   try { version.value = await getAppVersion(); } catch { version.value = "unknown"; }
 });
+
+async function onCheckUpdate() {
+  checkingUpdate.value = true;
+  try {
+    const r = await checkNow();
+    if (!r) { toast.err("检查失败（网络或 GitHub 不可达）"); return; }
+    if (r.has_update) { toast.ok(`发现新版本 v${r.latest_version}（当前 v${r.current_version}）`); }
+    else { toast.ok("当前已是最新版本"); }
+  } finally {
+    checkingUpdate.value = false;
+  }
+}
 
 const diag = ref("");
 const loading = ref(false);
@@ -33,7 +50,16 @@ async function copyDiag() {
     <header class="page-header">
       <h2>关于 CC-Gate</h2>
       <span class="badge on">v{{ version }}</span>
+      <button class="btn" style="margin-left:auto" :disabled="checkingUpdate" @click="onCheckUpdate">
+        {{ checkingUpdate ? "检查中…" : "检查更新" }}
+      </button>
     </header>
+
+    <div v-if="updateInfo?.has_update" class="app-update-banner">
+      <span>🚀 新版本 v{{ updateInfo.latest_version }} 已发布（当前 v{{ updateInfo.current_version }}）</span>
+      <button class="btn primary" @click="openUrl(updateInfo.release_url)">去 GitHub 下载</button>
+      <button class="btn ghost" @click="dismissUpdate()">忽略此版本</button>
+    </div>
 
     <div class="about-content">
       <p class="about-desc">
@@ -137,6 +163,13 @@ async function copyDiag() {
 </template>
 
 <style scoped>
+.app-update-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; margin-bottom: 16px; max-width: 720px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius-md); font-size: 13px; color: var(--fg);
+}
 .about-content { padding: 0; max-width: 720px; }
 .about-desc { font-size: 14px; color: var(--fg-dim); line-height: 1.6; margin: 0 0 24px; }
 

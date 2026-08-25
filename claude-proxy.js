@@ -46,6 +46,7 @@ function loadProviders(env) {
           baseUrl: p.baseUrl,
           apiKey: env[p.envKey] || '',
           defaultModel: m.id,
+          displayPrefix: p.displayPrefix || undefined,
           displayName: m.displayName || m.id,
           contextWindow: m.contextWindow || 131072,
           maxOutputTokens: m.maxOutputTokens || 16384,
@@ -82,9 +83,45 @@ function loadProviders(env) {
 }
 
 const env = loadEnv();
-const PROVIDERS = loadProviders(env);
 
-console.error(`Loaded ${Object.keys(PROVIDERS).length} providers: ${Object.keys(PROVIDERS).join(', ')}`);
+// ── Anthropic official models (gateway discovery supplement) ──
+// The /model picker should also list Claude's own models even though they have
+// no providers.json entry (they go through the native passthrough instead).
+// Live list comes from models-cache.json — the remote model catalog CC-Gate
+// refreshes from GitHub — so a new Claude model needs no proxy change. The
+// static table is only the offline fallback.
+const CATALOG_CACHE_FILE = path.join(HOME, '.mimo2codex', 'models-cache.json');
+
+const OFFICIAL_MODELS_FALLBACK = [
+  { id: 'claude-opus-5',   display_name: 'Claude Opus 5',   context_window: 1000000, max_output_tokens: 32768 },
+  { id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8', context_window: 1000000, max_output_tokens: 128000 },
+  { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5', context_window: 1000000, max_output_tokens: 128000 },
+  { id: 'claude-fable-5',  display_name: 'Claude Fable 5',  context_window: 1000000, max_output_tokens: 128000 },
+];
+
+function loadOfficialModels() {
+  try {
+    if (fs.existsSync(CATALOG_CACHE_FILE)) {
+      const cat = JSON.parse(fs.readFileSync(CATALOG_CACHE_FILE, 'utf8'));
+      const list = (cat.models || [])
+        .filter(m => m.provider === 'anthropic' && m.slug)
+        .map(m => ({
+          id: m.slug,
+          display_name: m.display_name || m.slug,
+          context_window: m.context_window || 200000,
+          max_output_tokens: m.max_output_tokens || 16384,
+        }));
+      if (list.length > 0) return list;
+    }
+  } catch (e) {
+    console.error(`[official-models] catalog cache read failed: ${e.message}`);
+  }
+  return OFFICIAL_MODELS_FALLBACK;
+}
+
+// Native-passthrough upstream. Overridable so the test harness can point it at
+// a fake upstream; production default is unchanged.
+const ANTHROPIC_NATIVE_BASE = process.env.CCGATE_ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
 
 // ── Custom alias routes (别名页, written by CC-Gate) ─────────
 // Token `ccgate-<name>` → per-window upstream. Hot-reloaded via mtime so the
@@ -126,6 +163,37 @@ function refreshAliases() {
 function aliasFor(token) {
   if (!token || !String(token).startsWith('ccgate-')) return null;
   return refreshAliases().map.get(String(token)) || null;
+}
+
+// ── providers.json hot reload ────────────────────────────────
+// PROVIDERS used to be a startup snapshot, so "discover relay models" (or any
+// provider edit) needed a proxy restart. Now: same mtime trick as aliases —
+// reloaded lazily on the next request after CC-Gate rewrites the file.
+const PROVIDERS = new Proxy({}, {
+  get(_t, prop) { refreshProviders(); return Reflect.get(providersState.map, prop); },
+  ownKeys() { refreshProviders(); return Reflect.ownKeys(providersState.map); },
+  has(_t, prop) { refreshProviders(); return prop in providersState.map; },
+  getOwnPropertyDescriptor(_t, prop) {
+    refreshProviders();
+    const d = Object.getOwnPropertyDescriptor(providersState.map, prop);
+    return d ? { ...d, configurable: true } : undefined;
+  },
+});
+let providersState = { mtime: -1, envMtime: -1, map: {} };
+
+function refreshProviders() {
+  try {
+    const pm = fs.existsSync(PROVIDERS_FILE) ? fs.statSync(PROVIDERS_FILE).mtimeMs : 0;
+    const em = fs.existsSync(ENV_FILE) ? fs.statSync(ENV_FILE).mtimeMs : 0;
+    if (pm === providersState.mtime && em === providersState.envMtime) return;
+    // Latest .env wins over the startup snapshot so a just-saved relay key is
+    // picked up together with its new models.
+    const env2 = { ...env, ...refreshAliases().freshEnv };
+    providersState = { mtime: pm, envMtime: em, map: loadProviders(env2) };
+    console.error(`[providers] ${Object.keys(providersState.map).length} entries loaded`);
+  } catch (e) {
+    console.error(`[providers] reload failed: ${e.message}`);
+  }
 }
 
 function aliasToProvider(alias) {
@@ -587,6 +655,35 @@ function openAIToAnthropic(openAIResp, model) {
 }
 
 // ── Error response ───────────────────────────────────────────
+// Translate cryptic relay/vendor errors into actionable hints (kept in English+
+// Chinese so the message survives any client). Matched on stable substrings.
+// Clamp client max_tokens to the model's declared output cap. PI sends huge
+// defaults; relays like SenseNova reject anything above their limit.
+function clampMaxTokens(provider, body) {
+  let cap = provider && provider.maxOutputTokens;
+  // Alias windows build their provider from the alias route (no output cap on
+  // it) — fall back to the same model's entry in the shared catalog.
+  if (!cap) {
+    const ref = PROVIDERS[body.model];
+    if (ref) cap = ref.maxOutputTokens;
+  }
+  if (cap && body.max_tokens > cap) {
+    console.error(`[clamp] max_tokens ${body.max_tokens} -> ${cap}`);
+    body.max_tokens = cap;
+  }
+}
+
+function humanizeUpstreamError(msg) {
+  const m = String(msg || '');
+  if (/prohibited due to a violation/i.test(m)) {
+    return m + ' 【提示】该模型被中转站平台政策拦截（大厂闭源模型通常禁止聚合调用）。在 CC-Gate 中转站「挑选」里取消勾选即可不再出现；或在平台上绑定自己的官方 Key(BYOK)。';
+  }
+  if (/is not a valid model ID/i.test(m)) {
+    return m + ' 【提示】该模型 ID 已失效——中转站可能已下架，请在 CC-Gate 中转站「刷新模型」后重新挑选。';
+  }
+  return m;
+}
+
 function errorResponse(status, message) {
   return {
     type: 'error',
@@ -647,7 +744,7 @@ function handleModels(res, token) {
     const allowed = new Set(Array.isArray(alias.models) ? alias.models : [alias.model]);
     providers = providers.filter(p => allowed.has(p.defaultModel));
   }
-  const models = providers.map(p => ({
+  const routed = providers.map(p => ({
     id: 'claude-' + p.defaultModel,       // claude- prefix required by CC
     type: 'model',
     display_name: p.displayName,
@@ -655,15 +752,30 @@ function handleModels(res, token) {
     context_window: p.contextWindow || 200000,
     max_output_tokens: p.maxOutputTokens || 16384,
   }));
+  // Official Claude models head the list — non-alias windows only. An alias
+  // window pins one source whose token can't authenticate to api.anthropic.com
+  // (placeholder "proxy"/"ccgate-*"), and relay-carried claude-* models already
+  // appear above via their providers.json entries.
+  const official = alias ? [] : loadOfficialModels().map(m => ({
+    id: m.id,
+    type: 'model',
+    display_name: m.display_name,
+    created_at: '2025-01-01T00:00:00Z',
+    context_window: m.context_window,
+    max_output_tokens: m.max_output_tokens,
+  }));
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ data: models }));
+  res.end(JSON.stringify({ data: [...official, ...routed] }));
 }
 
 // ── Main server ──────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   console.error(`${req.method} ${req.url}`);
-  // Gateway model discovery
-  if (req.method === 'GET' && req.url === '/v1/models') {
+  // Gateway model discovery — match on pathname only: Claude Code appends a
+  // query string (?limit=1000), and strict equality 404'd it, silently emptying
+  // the /model picker's gateway options.
+  const reqPath = req.url.split('?')[0];
+  if (req.method === 'GET' && reqPath === '/v1/models') {
     handleModels(res, (req.headers['x-api-key'] || (req.headers['authorization'] || '').replace('Bearer ', '')) || '');
     return;
   }
@@ -753,25 +865,33 @@ const server = http.createServer(async (req, res) => {
     // claude-* model must win over this built-in, or its key is sent to Anthropic → 401.
     const isAnthropicNative = !provider && /^claude-(opus|sonnet|haiku|fable)-/.test(modelId);
     if (isAnthropicNative) {
-      const clientKey = authHeader || 'no-key';
+      // Alias windows inject placeholder tokens ("proxy", "ccgate-*") that can never
+      // authenticate to Anthropic — fall back to a real key from .env/process when present.
+      let clientKey = authHeader || 'no-key';
+      if (!clientKey || clientKey === 'proxy' || clientKey.startsWith('ccgate-')) {
+        clientKey = process.env.ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY || clientKey;
+      }
       const nativeHeaders = { 'x-api-key': clientKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' };
-      console.error(`→ ${realModelId} → Anthropic passthrough (https://api.anthropic.com)${anthropicReq.stream ? ' [stream]' : ''}`);
+      console.error(`→ ${modelId} → Anthropic passthrough (${ANTHROPIC_NATIVE_BASE})${anthropicReq.stream ? ' [stream]' : ''}`);
       const reqBody = { ...anthropicReq };
-      reqBody.model = realModelId;
+      // Keep the FULL "claude-*" name: discovery prefixed it, and Anthropic's API
+      // requires it verbatim — the stripped realModelId here caused 400 model-not-found.
+      reqBody.model = modelId;
+      clampMaxTokens(null, reqBody); // no declared cap -> no-op
       try {
         if (anthropicReq.stream) {
-          await streamPassthrough('https://api.anthropic.com/v1/messages', {
+          await streamPassthrough(`${ANTHROPIC_NATIVE_BASE}/v1/messages`, {
             headers: nativeHeaders
           }, reqBody, res);
         } else {
-          const result = await httpRequest('https://api.anthropic.com/v1/messages', {
+          const result = await httpRequest(`${ANTHROPIC_NATIVE_BASE}/v1/messages`, {
             headers: nativeHeaders
           }, reqBody);
           if (result.status === 200) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(result.body));
           } else {
-            const errMsg = result.body?.error?.message || JSON.stringify(result.body);
+            const errMsg = humanizeUpstreamError(result.body?.error?.message || JSON.stringify(result.body));
             console.error(`← ${realModelId} ERROR ${result.status}: ${errMsg}`);
             res.writeHead(result.status, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(errorResponse(result.status, errMsg)));
@@ -818,6 +938,7 @@ const server = http.createServer(async (req, res) => {
       console.error(`→ ${modelId} → ${provider.displayName} (passthrough: ${provider.baseUrl})${anthropicReq.stream ? ' [stream]' : ''}`);
       const reqBody = { ...anthropicReq };
       reqBody.model = provider.anthropicModel || provider.defaultModel || modelId;
+      clampMaxTokens(provider, reqBody);
       try {
         if (anthropicReq.stream) {
           await streamPassthrough(provider.baseUrl + '/v1/messages', {
@@ -831,7 +952,7 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(result.body));
           } else {
-            const errMsg = result.body?.error?.message || JSON.stringify(result.body);
+            const errMsg = humanizeUpstreamError(result.body?.error?.message || JSON.stringify(result.body));
             console.error(`← ${modelId} ERROR ${result.status}: ${errMsg}`);
             res.writeHead(result.status, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(errorResponse(result.status, errMsg)));
@@ -848,6 +969,7 @@ const server = http.createServer(async (req, res) => {
       // ── OpenAI Chat Completions translation ──
       const openaiReq = anthropicToOpenAI(anthropicReq);
       openaiReq.model = provider.defaultModel;
+      clampMaxTokens(provider, openaiReq);
       // Some relay configs store the FULL endpoint path (e.g. https://…/v1/chat/completions),
       // but this proxy appends "/chat/completions" itself. Strip any existing suffix to
       // avoid a doubled path, which relays answer with "404 page not found".
@@ -875,7 +997,7 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(anthropicResp));
           } else {
-            const errMsg = result.body?.error?.message || JSON.stringify(result.body);
+            const errMsg = humanizeUpstreamError(result.body?.error?.message || JSON.stringify(result.body));
             console.error(`← ${modelId} ERROR ${result.status}: ${errMsg}`);
             res.writeHead(result.status, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(errorResponse(result.status, errMsg)));

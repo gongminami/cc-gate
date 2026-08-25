@@ -50,6 +50,26 @@ pub fn agent_list() -> Vec<AgentMeta> {
 
 // ── Relay / transit station config ──────────────────────────
 
+/// One model discovered from a relay's `/v1/models` endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayModelDef {
+    /// Raw id as the relay reports it (e.g. "anthropic/claude-opus-4").
+    pub id: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// From the relay's max_output_length / max_output_tokens field, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    /// Picked for display in the pickers. Discovery defaults everything to
+    /// true; the 挑选 dialog narrows it down.
+    #[serde(default = "default_true")]
+    pub selected: bool,
+}
+
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayConfig {
     pub name: String,           // user-friendly label, e.g. "我的中转"
@@ -57,6 +77,15 @@ pub struct RelayConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_url: Option<String>,  // Anthropic-native URL (optional), e.g. https://api.relay.com/anthropic
     pub key: String,            // API key (saved to .env as RELAY_<name>_API_KEY)
+    /// None = enabled (default). Some(false) hides this relay's discovered
+    /// models from every picker — for relays you stopped paying for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Everything the relay's /v1/models returned. Stored per-relay so deleting
+    /// the relay removes its discovered models automatically. Default-on:
+    /// discovery imports all of them, no per-model opt-in needed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<RelayModelDef>,
 }
 
 // ── Custom alias (别名页) ────────────────────────────────────
@@ -125,7 +154,6 @@ impl Default for AppConfig {
     }
 }
 
-fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

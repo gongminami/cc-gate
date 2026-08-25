@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import type { AppConfig, ModelDef } from "../types/models";
-import { addCustomModel, updateCustomModel, deleteCustomModel, knownProviders, checkModelUpdates } from "../ipc/api";
+import { addCustomModel, updateCustomModel, deleteCustomModel, knownProviders, checkModelUpdates, setModelRouting } from "../ipc/api";
 import { useToast } from "../composables/useToast";
 import { useAppConfig } from "../composables/useAppConfig";
 
@@ -23,6 +23,27 @@ function providerLabel(p: string): string {
     moonshot: "月之暗面 Kimi", longcat: "美团 LongCat",
   };
   return m[p] || p;
+}
+
+// ── 全局线路（对所有工具生效）─────────────────────────────
+const routingBusy = ref<Set<string>>(new Set());
+function routingFor(slug: string): string {
+  return props.config?.model_routing?.[slug] ?? "direct";
+}
+async function onRoutingChange(slug: string, ev: Event) {
+  if (!props.config) return;
+  const routing = (ev.target as HTMLSelectElement).value;
+  routingBusy.value = new Set([...routingBusy.value, slug]);
+  try {
+    await setModelRouting(props.config, slug, routing);
+    await refresh();
+    toast.ok(routing === "direct" ? `「${slug}」已切回直连` : `「${slug}」已改走 ${routing.slice(6)}——所有工具立即生效`);
+  } catch (e: any) { toast.err(e?.message ?? String(e)); }
+  finally {
+    const next = new Set(routingBusy.value);
+    next.delete(slug);
+    routingBusy.value = next;
+  }
 }
 
 // 内置模型不可删改（slug 对照后端 builtin_models）
@@ -109,7 +130,7 @@ async function onCheckUpdates() {
           <thead>
             <tr>
               <th>厂商</th><th>模型</th><th>slug</th><th>上下文</th><th>最大输出</th>
-              <th>入价 /1K</th><th>出价 /1K</th><th>Responses</th><th style="width:130px"></th>
+              <th>入价 /1K</th><th>出价 /1K</th><th>Responses</th><th title="决定该模型走官方直连还是某个中转站；对所有工具生效">线路<span class="dim">(全局)</span></th><th style="width:130px"></th>
             </tr>
           </thead>
           <tbody>
@@ -122,6 +143,12 @@ async function onCheckUpdates() {
               <td>${{ m.input_price_per_1k.toFixed(4) }}</td>
               <td>${{ m.output_price_per_1k.toFixed(4) }}</td>
               <td>{{ m.native_responses ? '✓' : '—' }}</td>
+              <td>
+                <select class="route-select" :disabled="routingBusy.has(m.slug)" :value="routingFor(m.slug)" @change="onRoutingChange(m.slug, $event)">
+                  <option value="direct">直连</option>
+                  <option v-for="r in (config?.relays || [])" :key="r.name" :value="'relay:' + r.name">{{ r.name }}</option>
+                </select>
+              </td>
               <td class="actions-cell">
                 <template v-if="!isBuiltin(m.slug)">
                   <button class="btn ghost" @click="startEditModel(m)">编辑</button>
@@ -194,6 +221,8 @@ async function onCheckUpdates() {
 .param-table th { text-align: left; color: var(--fg-muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .param-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .param-table tr:last-child td { border-bottom: none; }
+.route-select { padding: 3px 7px; font-size: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--surface); color: var(--fg); outline: none; cursor: pointer; }
+.route-select:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
 .provider-cell { font-weight: 600; }
 .name-cell { font-weight: 500; }
 .actions-cell { display: flex; gap: 4px; }

@@ -46,10 +46,17 @@ function loadProviders(env) {
           baseUrl: p.baseUrl,
           apiKey: env[p.envKey] || '',
           defaultModel: m.id,
+          displayPrefix: p.displayPrefix || undefined,
           displayName: m.displayName || m.id,
           contextWindow: m.contextWindow || 131072,
           maxOutputTokens: m.maxOutputTokens || 16384,
         };
+        // Relay-discovered entries carry displayPrefix ("OpenRouter/") — PI and
+        // Hermes show the prefixed id so the relay name is visible; forwarding
+        // still uses the raw upstream name via defaultModel.
+        if (p.displayPrefix) {
+          providers[p.displayPrefix + m.id] = { ...providers[m.id], _displayAlias: true, prefixStrip: p.displayPrefix };
+        }
       }
     }
   }
@@ -78,9 +85,6 @@ function loadProviders(env) {
 }
 
 const env = loadEnv();
-const PROVIDERS = loadProviders(env);
-
-console.error(`[chat-proxy] Loaded ${Object.keys(PROVIDERS).length} models: ${Object.keys(PROVIDERS).join(', ')}`);
 
 // ── Custom alias routes (别名页, written by CC-Gate) ─────────
 // Bearer token `ccgate-<name>` → per-window upstream. Hot-reloaded via mtime
@@ -121,6 +125,34 @@ function refreshAliases() {
 function aliasFor(token) {
   if (!token || !String(token).startsWith('ccgate-')) return null;
   return refreshAliases().map.get(String(token)) || null;
+}
+
+// ── providers.json hot reload (same as claude-proxy) ─────────
+// "发现模型"/provider edits rewrite providers.json — picked up lazily on the
+// next request instead of requiring a proxy restart.
+const PROVIDERS = new Proxy({}, {
+  get(_t, prop) { refreshProviders(); return Reflect.get(providersState.map, prop); },
+  ownKeys() { refreshProviders(); return Reflect.ownKeys(providersState.map); },
+  has(_t, prop) { refreshProviders(); return prop in providersState.map; },
+  getOwnPropertyDescriptor(_t, prop) {
+    refreshProviders();
+    const d = Object.getOwnPropertyDescriptor(providersState.map, prop);
+    return d ? { ...d, configurable: true } : undefined;
+  },
+});
+let providersState = { mtime: -1, envMtime: -1, map: {} };
+
+function refreshProviders() {
+  try {
+    const pm = fs.existsSync(PROVIDERS_FILE) ? fs.statSync(PROVIDERS_FILE).mtimeMs : 0;
+    const em = fs.existsSync(ENV_FILE) ? fs.statSync(ENV_FILE).mtimeMs : 0;
+    if (pm === providersState.mtime && em === providersState.envMtime) return;
+    const env2 = { ...env, ...refreshAliases().freshEnv };
+    providersState = { mtime: pm, envMtime: em, map: loadProviders(env2) };
+    console.error(`[chat-proxy][providers] ${Object.keys(providersState.map).length} entries loaded`);
+  } catch (e) {
+    console.error(`[chat-proxy][providers] reload failed: ${e.message}`);
+  }
 }
 
 function aliasToProvider(alias) {
@@ -177,8 +209,13 @@ function handleModels(res, token) {
     const allowed = new Set(Array.isArray(alias.models) ? alias.models : [alias.model]);
     providers = providers.filter(p => allowed.has(p.defaultModel));
   }
+  // Skip display-alias entries — their prefixed twin is advertised instead.
+  providers = providers.filter(p => !p._displayAlias);
   const models = providers.map(p => ({
-    id: p.defaultModel,
+    // Relay-discovered entries carry displayPrefix — advertise the prefixed id
+    // so dynamic-discovery clients (Hermes) match the static config list
+    // exactly, instead of showing duplicate unprefixed entries.
+    id: (p.displayPrefix || '') + p.defaultModel,
     object: 'model',
     created: 1700000000,
     owned_by: 'CC-Gate',
@@ -212,7 +249,7 @@ function httpRequest(url, headers, body) {
 }
 
 // ── Streaming (SSE) request — pipe upstream SSE directly ─────
-function streamRequest(url, headers, body, clientRes) {
+function streamRequest(url, headers, body, clientRes, fallbackBody) {
   const u = new URL(url);
   const mod = u.protocol === 'https:' ? https : http;
   const upstreamReq = mod.request(u, {
@@ -221,10 +258,15 @@ function streamRequest(url, headers, body, clientRes) {
     timeout: 600000,
   }, upstreamRes => {
     if (upstreamRes.statusCode !== 200) {
-      // Non-streaming error — collect and send as JSON
+      // Non-streaming error — collect and inspect before forwarding
       let data = '';
       upstreamRes.on('data', c => data += c);
       upstreamRes.on('end', () => {
+        // Protocol fallback: relay rejected our normalized shape -> retry raw once
+        if (fallbackBody && /invalid|unexpected|not supported|unrecognized/i.test(data)) {
+          console.error(`[chat-proxy] normalized stream rejected (${upstreamRes.statusCode}) — retrying raw client body`);
+          return streamRequest(url, headers, fallbackBody, clientRes);
+        }
         clientRes.writeHead(upstreamRes.statusCode, { 'Content-Type': 'application/json' });
         clientRes.end(data);
       });
@@ -287,8 +329,31 @@ function sendError(res, status, message) {
 const server = http.createServer(async (req, res) => {
   console.error(`[chat-proxy] ${req.method} ${req.url}`);
 
-  // ── GET /v1/models ─────────────────────────────────────
-  if (req.method === 'GET' && req.url === '/v1/models') {
+  // ── GET /v1/models/<id> — single-model metadata. PI probes this before it
+  // will use a model; without the endpoint every discovered relay model 404s.
+  {
+    const rp = req.url.split('?')[0];
+    if (req.method === 'GET' && rp.startsWith('/v1/models/')) {
+      let id = '';
+      try { id = decodeURIComponent(rp.slice('/v1/models/'.length)); } catch { id = rp.slice('/v1/models/'.length); }
+      console.error(`← GET /v1/models/${id} (single-model probe)`);
+      const p = PROVIDERS[id];
+      if (p) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          id, object: 'model', created: 1700000000, owned_by: 'CC-Gate',
+          context_window: p.contextWindow, max_output_tokens: p.maxOutputTokens,
+        }));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: `Unknown model: ${id}`, type: 'not_found_error' } }));
+      }
+      return;
+    }
+  }
+
+  // ── GET /v1/models (pathname only — clients may append ?query) ─────────────────────────────────────
+  if (req.method === 'GET' && req.url.split('?')[0] === '/v1/models') {
     handleModels(res, (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim());
     return;
   }
@@ -337,8 +402,17 @@ const server = http.createServer(async (req, res) => {
       // 方案B: honor the requested model when this alias's source carries it,
       // so /model switching works inside an alias window.
       const allowed = Array.isArray(alias.models) ? alias.models : [];
-      if (allowed.includes(modelId)) {
-        provider.defaultModel = modelId;
+      // A pinned request may arrive in prefixed display form ("Relay/model") —
+      // strip the known display prefixes so upstream gets the raw name.
+      let rawModel = modelId;
+      for (const p2 of Object.values(PROVIDERS)) {
+        if (p2.prefixStrip && rawModel.startsWith(p2.prefixStrip)) {
+          rawModel = rawModel.slice(p2.prefixStrip.length);
+          break;
+        }
+      }
+      if (allowed.includes(rawModel)) {
+        provider.defaultModel = rawModel;
       }
     } else {
       provider = PROVIDERS[modelId];
@@ -358,6 +432,40 @@ const server = http.createServer(async (req, res) => {
     // Build upstream request — keep original model name or use provider default
     const upstreamBody = { ...chatReq };
     upstreamBody.model = provider.defaultModel;
+    // Normalize OpenAI-modern request shapes for older compatible relays:
+    // PI sends role:"developer" + max_completion_tokens; many relays only
+    // understand "system" + max_tokens. Unknown extra fields are left intact —
+    // most relays ignore them. If a relay still rejects the normalized shape,
+    // the raw client body is retried once below.
+    let usedNormalize = false;
+    if (upstreamBody.max_tokens === undefined && upstreamBody.max_completion_tokens !== undefined) {
+      upstreamBody.max_tokens = upstreamBody.max_completion_tokens;
+      usedNormalize = true;
+    }
+    for (const m of (upstreamBody.messages || [])) {
+      if (m && m.role === 'developer') { m.role = 'system'; usedNormalize = true; }
+    }
+    // Raw client body (model swapped for the upstream name) for fallback retry.
+    const rawUpstreamBody = { ...chatReq, model: upstreamBody.model };
+    // TEMP DEBUG: dump message roles for relay 400 diagnosis
+    try {
+      const roles = (upstreamBody.messages || []).map(m => m.role).join(',');
+      console.error(`[req-dbg] model=${upstreamBody.model} max_tokens=${upstreamBody.max_tokens} roles=[${roles}] topKeys=${Object.keys(upstreamBody).join(',')}`);
+    } catch {}
+    // Clamp max_tokens to the model's declared output cap — relays like
+    // SenseNova reject anything above it (400 MaxTokens invalid). Clients
+    // (PI) often send huge defaults.
+    let cap = provider.maxOutputTokens;
+    // Alias windows resolve through aliasToProvider which carries no cap —
+    // fall back to the model's entry in the shared catalog.
+    if (!cap) {
+      const ref = PROVIDERS[upstreamBody.model];
+      if (ref) cap = ref.maxOutputTokens;
+    }
+    if (cap && upstreamBody.max_tokens > cap) {
+      console.error(`[clamp] max_tokens ${upstreamBody.max_tokens} -> ${cap}`);
+      upstreamBody.max_tokens = cap;
+    }
 
     // Some relay configs store the FULL endpoint path (e.g. https://…/v1/chat/completions),
     // but this proxy appends "/chat/completions" itself. Strip any existing suffix to
@@ -371,10 +479,16 @@ const server = http.createServer(async (req, res) => {
 
     if (isStream) {
       // Streaming: skip usage recording for now (SSE buffering complex)
-      streamRequest(upstreamUrl, authHeaders, upstreamBody, res);
+      const fb = usedNormalize ? rawUpstreamBody : null;
+      streamRequest(upstreamUrl, authHeaders, upstreamBody, res, fb);
     } else {
       try {
-        const result = await httpRequest(upstreamUrl, authHeaders, upstreamBody);
+        let result = await httpRequest(upstreamUrl, authHeaders, upstreamBody);
+        // Fallback: relay rejected our normalized shape -> retry raw client body once
+        if (result.status >= 400 && usedNormalize) {
+          console.error(`[chat-proxy] ${modelId} normalized request rejected (${result.status}) — retrying raw`);
+          result = await httpRequest(upstreamUrl, authHeaders, rawUpstreamBody);
+        }
         // Record usage on success (disabled — 模型参数未校准, 暂不统计)
         // if (result.status === 200 && result.body?.usage) {
         //   recordUsage(modelId, result.body.usage, 'chat-proxy');

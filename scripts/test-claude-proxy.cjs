@@ -89,13 +89,40 @@ function makeFakeHome() {
       },
     ],
   }, null, 2));
+
+  // Remote catalog cache with an Anthropic model the static fallback table does
+  // NOT have — discovery must pick it up dynamically (no proxy change needed).
+  fs.writeFileSync(path.join(dir, 'models-cache.json'), JSON.stringify({
+    version: 99, updated_at: '2026-08-23T00:00:00Z',
+    models: [
+      { slug: 'claude-x-test-9', display_name: 'Claude X Test 9', provider: 'anthropic', context_window: 123456, max_output_tokens: 65432, enabled: true },
+      { slug: 'deepseek-v9', display_name: 'DS9', provider: 'deepseek', enabled: true },
+    ],
+  }));
+
+  // One custom alias window (token ccgate-test) pinned to the DeepSeek source —
+  // its /model list must NOT contain official Claude models.
+  fs.writeFileSync(path.join(dir, 'aliases.json'), JSON.stringify({
+    aliases: [{
+      name: 'tstest', tool: 'claude_cli', token: 'ccgate-test',
+      model: 'deepseek-v4-pro', models: ['deepseek-v4-pro'],
+      baseUrl: base, envKey: 'DEEPSEEK_API_KEY', anthropicEndpoint: false,
+    }],
+  }, null, 2));
   return home;
 }
 
 function startProxy(home) {
   const script = path.join(home, '.mimo2codex', 'claude-proxy.js');
   const p = spawn(process.execPath, [script, '--port', String(PROXY_PORT)], {
-    env: { ...process.env, HOME: home, USERPROFILE: home },
+    env: {
+      ...process.env,
+      HOME: home, USERPROFILE: home,
+      // Point the native-passthrough at the fake upstream so official-model
+      // requests can be asserted without touching api.anthropic.com.
+      CCGATE_ANTHROPIC_BASE_URL: `http://127.0.0.1:${UPSTREAM_PORT}`,
+      ANTHROPIC_API_KEY: 'sk-ant-official-key',
+    },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let log = '';
@@ -124,9 +151,10 @@ function post(model, apiKey) {
   });
 }
 
-function getModels() {
+function getModels(apiKey, path = '/v1/models') {
   return new Promise((resolve, reject) => {
-    http.get({ host: '127.0.0.1', port: PROXY_PORT, path: '/v1/models' }, res => {
+    const headers = apiKey ? { 'x-api-key': apiKey } : {};
+    http.get({ host: '127.0.0.1', port: PROXY_PORT, path, headers }, res => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
     }).on('error', reject);
@@ -204,6 +232,75 @@ function check(name, cond, detail) {
     const ids = (models.data || []).map(m => m.id);
     check('claude-claude-opus-5 advertised', ids.includes('claude-claude-opus-5'), `ids=${ids.join(', ')}`);
     check('claude-deepseek-v4-pro advertised', ids.includes('claude-deepseek-v4-pro'), `ids=${ids.join(', ')}`);
+
+    console.log('\n── /v1/models tolerates a query string (?limit=1000) ──');
+    // Claude Code's gateway discovery sends GET /v1/models?limit=1000 — strict
+    // url equality used to 404 it, silently emptying the /model picker.
+    const modelsQs = await getModels('proxy', '/v1/models?limit=1000');
+    check('?limit=1000 answered with 200 + data',
+      Array.isArray(modelsQs.data) && modelsQs.data.length > 0,
+      `data=${JSON.stringify(modelsQs).slice(0, 120)}`);
+
+    console.log('\n── providers.json hot reload (relay model discovery flow) ──');
+    // CC-Gate rewrites providers.json after "发现模型" — the proxy must pick up
+    // new entries on the NEXT request without a restart.
+    const provFile = path.join(home, '.mimo2codex', 'providers.json');
+    const prov = JSON.parse(fs.readFileSync(provFile, 'utf8'));
+    prov.providers.push({
+      id: 'relayx-openrouter-discovered', name: 'OpenRouter 发现的模型',
+      baseUrl: `http://127.0.0.1:${UPSTREAM_PORT}`, envKey: 'DEEPSEEK_API_KEY',
+      defaultModel: 'anthropic/claude-opus-4',
+      models: [{ id: 'anthropic/claude-opus-4', displayName: 'Claude Opus 4 (via OR)', contextWindow: 200000 }],
+    });
+    fs.writeFileSync(provFile, JSON.stringify(prov, null, 2));
+    const hotModels = await getModels();
+    check('discovered entry visible without restart',
+      (hotModels.data || []).some(m => m.id === 'claude-anthropic/claude-opus-4'),
+      `ids=${(hotModels.data || []).map(m => m.id).join(', ')}`);
+    received = [];
+    r = await post('claude-anthropic/claude-opus-4', 'proxy');
+    check('discovered model routes to the relay',
+      r.status === 200 && received[0]?.url === '/chat/completions' && received[0]?.authorization === 'Bearer ds-key',
+      `status=${r.status} url=${received[0]?.url} auth=${received[0]?.authorization}`);
+
+    console.log('\n── gateway discovery lists OFFICIAL Claude models (non-alias window) ──');
+    // models-cache.json exists in the fake HOME → its anthropic entry is the live
+    // official list AND fully replaces the static fallback (no merge).
+    check('catalog-cache model heads the list', ids[0] === 'claude-x-test-9', `first=${ids[0]}`);
+    check('static fallback NOT merged when cache exists',
+      !ids.includes('claude-sonnet-5') && !ids.includes('claude-opus-4-8'), `ids=${ids.join(', ')}`);
+    check('catalog-cache model picked up dynamically (claude-x-test-9)',
+      ids.includes('claude-x-test-9'), `ids=${ids.join(', ')}`);
+    const x9 = (models.data || []).find(m => m.id === 'claude-x-test-9');
+    check('catalog-cache model fields carried through',
+      x9?.display_name === 'Claude X Test 9' && x9?.context_window === 123456,
+      `got ${JSON.stringify(x9)}`);
+
+    console.log('\n── ALIAS windows do NOT see official Claude models ──');
+    const aliasModels = await getModels('ccgate-test');
+    const aliasIds = (aliasModels.data || []).map(m => m.id);
+    check('alias window sees only its source model',
+      aliasIds.length === 1 && aliasIds[0] === 'claude-deepseek-v4-pro',
+      `ids=${aliasIds.join(', ')}`);
+
+    console.log('\n── native passthrough: full model name + placeholder-key fallback ──');
+    // "claude-opus-4-8" is official-only (not in providers.json): must reach
+    // Anthropic with the FULL claude- prefixed name, and the client's placeholder
+    // token ("proxy") must be replaced by ANTHROPIC_API_KEY from the environment.
+    received = [];
+    r = await post('claude-opus-4-8', 'proxy');
+    check('passthrough reached the upstream', received.length === 1, `upstream saw ${received.length}`);
+    check('full name kept: "claude-opus-4-8", not stripped to "opus-4-8"',
+      received[0]?.model === 'claude-opus-4-8', `model=${received[0]?.model}`);
+    check('placeholder "proxy" key replaced by env ANTHROPIC_API_KEY',
+      received[0]?.apiKey === 'sk-ant-official-key', `got ${received[0]?.apiKey}`);
+
+    console.log('\n── native passthrough: a real-looking client key is forwarded as-is ──');
+    received = [];
+    r = await post('claude-fable-5', 'sk-user-real-key');
+    check('client key forwarded untouched',
+      received[0]?.apiKey === 'sk-user-real-key', `got ${received[0]?.apiKey}`);
+    check('fable-5 name intact', received[0]?.model === 'claude-fable-5', `model=${received[0]?.model}`);
 
     console.log('\n── source hygiene ──');
     const src = fs.readFileSync(PROXY_SRC, 'utf8');

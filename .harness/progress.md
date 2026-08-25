@@ -472,3 +472,13 @@ _Append-only. Newest at bottom. ISO8601 timestamps only._
 - **action**: 落 waypoint + 重写 handoff（0.1.24 状态：更新检查 + 菜单顺序 + 别名默认模型）
 - **outcome**: L2 反映本轮全部工作
 - **next**: git 本地提交 .harness/ + 源码，不 push
+
+## 2026-08-24T23:32:00-03:00 — work: 0.2.1 统一网关架构大版本（0.1.22→0.2.1 五轮迭代）
+- **touched**: config_writer.rs gen_aliases_impl重写+全局enabled规则+discovered注入 / chat-proxy.js claude-proxy.js（热重载Proxy/displayPrefix别名键/clamp/协议规范化回退/单模型探测端点/路由pathname修复） / PageIntegration.vue(新) PageHome.vue(瘦身) PageRelayKeys.vue(挑选弹窗) Sidebar/App重组 / model_catalog.rs(系统代理+发布检查) types.rs commands/config.rs lib.rs
+- **outcome**: cargo test 22✓ node测试 29✓ npm build ✓；Mac dmg 已装本机，pi/hermes/codex/claude 四工具中转站模型全链路验证通过
+- **关键踩坑（全部已固化）**：①dist变化不触发Tauri重嵌→scripts/build-mac.sh强制touch+产物自检 ②dmg挂载点漂移装旧卷→动态MNT+卷内验证 ③deploy_proxy_scripts覆盖磁盘调试js→改js必须重建 ④WKWebView缓存→清~/Library/WebKit/cc-gate
+- **next**: git commit+push → Windows 构建 → gh release v0.2.1
+
+## 2026-08-24T23:32:30-03:00 — handoff_ready: 0.2.1 收尾前同步
+- **touched**: .harness/handoff.md .harness/progress.md
+- **next**: git add -A && commit && push；Windows 构建；gh release create v0.2.1
