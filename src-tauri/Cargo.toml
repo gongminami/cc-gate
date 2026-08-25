@@ -1,6 +1,6 @@
 [package]
 name = "cc-gate"
-version = "0.2.1"
+version = "0.2.2"
 description = "Multi-model AI tool configuration manager"
 authors = ["cc-gate contributors"]
 edition = "2021"

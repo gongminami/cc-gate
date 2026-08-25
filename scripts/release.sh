@@ -10,10 +10,10 @@ if [ -z "$TOKEN" ]; then
 fi
 
 REPO="gongminami/cc-gate"
-TAG="v0.1.20"
-VERSION="0.1.20"
-DMG="src-tauri/target/release/bundle/dmg/CC-Gate_0.1.20_x64.dmg"
-EXE="/tmp/CC-Gate_0.1.20_x64-setup.exe"
+TAG="v0.2.2"
+VERSION="0.2.2"
+DMG="src-tauri/target/release/bundle/dmg/CC-Gate_0.2.2_x64.dmg"
+EXE="/tmp/CC-Gate_0.2.2_x64-setup.exe"
 MAC_SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
 WIN_SHA=$(shasum -a 256 "$EXE" | awk '{print $1}')
 
@@ -52,6 +52,12 @@ shasum -a 256 CC-Gate_${VERSION}_x64.dmg
 # Windows (PowerShell)
 Get-FileHash CC-Gate_${VERSION}_x64-setup.exe -Algorithm SHA256
 \`\`\`
+
+### Changes (v0.2.2)
+
+- 修复：Claude Code 后台任务（权限分类器 / 话题检测 / 标题生成）不再乱选模型 —— tier 请求自动跟随当前窗口主模型，冷启动回落 TOKEN_MAP / 内置默认模型
+- 新增：统一命令哨兵变量 claude-haiku-follows-main 钉住四个 tier env，后台任务抢跑也不会再打到官方端点报 401
+- 测试：claude-proxy 路由测试新增 4 个 tier-follow 用例（共 33 项全过）
 
 ### Changes (v0.1.20)
 

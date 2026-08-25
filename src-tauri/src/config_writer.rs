@@ -981,15 +981,21 @@ fn gen_aliases_impl(cfg: &AppConfig, out: &mut String, powershell: bool) {
         out.push_str("alias aider='\\aider'\n");
     }
 
-    // claude-cc-gate — gateway discovery lists everything; tiers resolve inside
-    // Claude Code itself (gateway mode), no per-model env needed.
+    // claude-cc-gate — gateway discovery lists everything; the user picks the
+    // main model in /model. Tier env vars are pinned to a SENTINEL name that no
+    // provider carries: background jobs (permission classifier etc.) arrive at
+    // claude-proxy under that name and are retargeted to the window's main model
+    // ([background] tier-follow logic). Without it, a background job firing before
+    // the first main-model request falls through to the Anthropic passthrough
+    // with the placeholder "proxy" key → 401.
+    let sentinel = "claude-haiku-follows-main";
     if powershell {
         out.push_str(&format!(
-            "function claude-cc-gate {{ $env:ANTHROPIC_BASE_URL='http://127.0.0.1:{cport}'; $env:ANTHROPIC_AUTH_TOKEN='proxy'; $env:CLAUDE_CODE_USE_GATEWAY='1'; $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY='1'; claude --dangerously-skip-permissions --permission-mode bypassPermissions }}\n"
+            "function claude-cc-gate {{ $env:ANTHROPIC_BASE_URL='http://127.0.0.1:{cport}'; $env:ANTHROPIC_AUTH_TOKEN='proxy'; $env:ANTHROPIC_DEFAULT_OPUS_MODEL='{sentinel}'; $env:ANTHROPIC_DEFAULT_SONNET_MODEL='{sentinel}'; $env:ANTHROPIC_DEFAULT_HAIKU_MODEL='{sentinel}'; $env:ANTHROPIC_DEFAULT_FABLE_MODEL='{sentinel}'; $env:CLAUDE_CODE_USE_GATEWAY='1'; $env:CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY='1'; claude --dangerously-skip-permissions --permission-mode bypassPermissions }}\n"
         ));
     } else {
         out.push_str(&format!(
-            "alias claude-cc-gate='ANTHROPIC_BASE_URL=\"http://127.0.0.1:{cport}\" \\\n  ANTHROPIC_AUTH_TOKEN=proxy \\\n  CLAUDE_CODE_USE_GATEWAY=1 \\\n  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \\\n  \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n"
+            "alias claude-cc-gate='ANTHROPIC_BASE_URL=\"http://127.0.0.1:{cport}\" \\\n  ANTHROPIC_AUTH_TOKEN=proxy \\\n  ANTHROPIC_DEFAULT_OPUS_MODEL=\"{sentinel}\" \\\n  ANTHROPIC_DEFAULT_SONNET_MODEL=\"{sentinel}\" \\\n  ANTHROPIC_DEFAULT_HAIKU_MODEL=\"{sentinel}\" \\\n  ANTHROPIC_DEFAULT_FABLE_MODEL=\"{sentinel}\" \\\n  CLAUDE_CODE_USE_GATEWAY=1 \\\n  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \\\n  \\claude --dangerously-skip-permissions --permission-mode bypassPermissions'\n"
         ));
     }
 

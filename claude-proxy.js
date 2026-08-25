@@ -699,6 +699,23 @@ const TOKEN_MAP = {
   'mimo': 'mimo-v2.5-pro',
 };
 
+// Per-window MAIN model memory — the last real model each token requested.
+// Background jobs arriving under official tier names are retargeted to it
+// (see the [background] handler in POST /v1/messages).
+const windowMainModel = new Map();
+
+function recordMainModel(token, resolved, alias) {
+  // Genuine main-model candidates: anything the shared catalog routes, or the
+  // window's own alias route carries. Tier names have neither → never recorded.
+  const allowed = alias ? (Array.isArray(alias.models) ? alias.models : [alias.model]) : [];
+  const ok = !!PROVIDERS[resolved] || (!!alias && (allowed.includes(resolved) || resolved === alias.model));
+  if (!token || !ok) return;
+  if (windowMainModel.get(token) !== resolved) {
+    console.error(`[background] main model for token "${token}" is now "${resolved}"`);
+  }
+  windowMainModel.set(token, resolved);
+}
+
 // ── Usage recording ────────────────────────────────────────
 const USAGE_FILE = path.join(HOME, '.mimo2codex', 'usage.jsonl');
 
@@ -819,7 +836,39 @@ const server = http.createServer(async (req, res) => {
     try { anthropicReq = JSON.parse(body); }
     catch { res.writeHead(400); res.end(JSON.stringify(errorResponse(400, 'Invalid JSON'))); return; }
 
-    const modelId = anthropicReq.model || '';
+    let modelId = anthropicReq.model || '';
+
+    // ── Background tasks follow the window's main model ────────
+    // Claude Code sends background jobs (permission classifier, topic detection,
+    // title generation) under OFFICIAL tier names (claude-opus-4-7, claude-sonnet-5,
+    // claude-ha-…) no matter which model the user picked in /model. Those names
+    // have no providers.json route, fell through to the Anthropic passthrough with
+    // the window's placeholder key, and died with 401 — which looked like "the
+    // classifier randomly picked a broken model". Fix: remember the last REAL
+    // model each token requested (its main model) and retarget tier-shaped
+    // requests to it. Models that genuinely exist in a provider (e.g. a relay's
+    // claude-opus-5) are routed normally and never mistaken for tier names.
+    const aliasBg = aliasFor(token);
+    const bgRaw = modelId.startsWith('claude-') && !PROVIDERS[modelId] ? modelId.slice(7) : modelId;
+    const bgAliasModels = aliasBg ? (Array.isArray(aliasBg.models) ? aliasBg.models : [aliasBg.model]) : [];
+    const bgRoutedDirectly = !!PROVIDERS[bgRaw] || bgAliasModels.includes(bgRaw);
+    // A real Anthropic key means an official window — its main-model choice is
+    // deliberate; never retarget its requests.
+    const realAnthropicKey = token && /^(sk-ant-|sk-)/.test(token);
+    // NOTE: test the FULL modelId (tier shape includes the "claude-" prefix);
+    // bgRaw is already stripped and would never match "^claude-".
+    if (!bgRoutedDirectly && !realAnthropicKey && /^claude-(opus|sonnet|haiku|fable)-/.test(modelId)) {
+      // Cold start (no main-model request seen yet): non-alias tokens fall back
+      // to their token shorthand or the built-in always-routable DeepSeek entry,
+      // so a background job firing before the first main request still succeeds.
+      // Alias windows keep the 方案B fallback below (their own source's model).
+      const bgMain = windowMainModel.get(token)
+        || (!aliasBg ? (TOKEN_MAP[token] || 'deepseek-v4-pro') : null);
+      if (bgMain) {
+        console.error(`[background] ${modelId} → ${bgMain} (follows window main model)`);
+        modelId = bgMain;
+      }
+    }
 
     // ── Resolve the requested model name ──
     // Gateway discovery prefixes every model with "claude-" (see handleModels), so
@@ -858,6 +907,9 @@ const server = http.createServer(async (req, res) => {
       resolvedModel = PROVIDERS[realModelId] ? realModelId : (TOKEN_MAP[token] || realModelId);
       provider = PROVIDERS[resolvedModel];
     }
+
+    // Remember this window's main model — background tier requests will follow it.
+    recordMainModel(token, resolvedModel, alias);
 
     // ── Anthropic-native passthrough (built-in) — only when providers.json has no route ──
     // Claude's own models go directly to api.anthropic.com with the client's OAuth token.

@@ -283,17 +283,50 @@ function check(name, cond, detail) {
       aliasIds.length === 1 && aliasIds[0] === 'claude-deepseek-v4-pro',
       `ids=${aliasIds.join(', ')}`);
 
-    console.log('\n── native passthrough: full model name + placeholder-key fallback ──');
-    // "claude-opus-4-8" is official-only (not in providers.json): must reach
-    // Anthropic with the FULL claude- prefixed name, and the client's placeholder
-    // token ("proxy") must be replaced by ANTHROPIC_API_KEY from the environment.
+    console.log('\n── background tier requests follow the window main model ──');
+    // Claude Code's permission classifier sends its own requests under official
+    // tier names (claude-opus-4-7, claude-sonnet-5, …) regardless of the model
+    // the user picked. Those names have no route and used to die in the Anthropic
+    // passthrough with 401 ("classifier randomly picked a broken model"). After
+    // a window has made ONE real request, tier-shaped requests must be retargeted
+    // to that window's main model.
     received = [];
-    r = await post('claude-opus-4-8', 'proxy');
+    await post('claude-deepseek-v4-pro', 'proxy');            // window's real pick
+    received = [];
+    r = await post('claude-opus-4-7', 'proxy');               // classifier call
+    check('tier request retargeted to deepseek-v4-pro',
+      r.status === 200 && received[0]?.url === '/chat/completions' && received[0]?.model === 'deepseek-v4-pro',
+      `status=${r.status} url=${received[0]?.url} model=${received[0]?.model}`);
+    received = [];
+    r = await post('claude-haiku-4-5-20251001', 'proxy');     // another tier shape
+    check('haiku-shaped request retargeted too',
+      r.status === 200 && received[0]?.model === 'deepseek-v4-pro',
+      `status=${r.status} model=${received[0]?.model}`);
+    // A DIFFERENT token keeps its own main model — no cross-window bleed.
+    received = [];
+    await post('claude-claude-opus-5', 'ds');                 // other window's pick
+    received = [];
+    r = await post('claude-sonnet-5', 'proxy');               // first window again
+    check('per-token memory: proxy token still on deepseek-v4-pro',
+      received[0]?.model === 'deepseek-v4-pro', `model=${received[0]?.model}`);
+    received = [];
+    r = await post('claude-sonnet-5', 'ccgate-test');         // alias window, no prior real req
+    // No recorded main yet → retarget skips → 方案B fallback routes it to the
+    // alias's own model instead of erroring at Anthropic.
+    check('alias window with NO prior real request: falls back to alias model',
+      r.status === 200 && received[0]?.url === '/chat/completions' && received[0]?.model === 'deepseek-v4-pro',
+      `status=${r.status} url=${received[0]?.url} model=${received[0]?.model}`);
+
+    console.log('\n── native passthrough: full model name, real key forwarded ──');
+    // An OFFICIAL window (real sk-ant key) picking an official-only model must
+    // reach Anthropic untouched — no tier-follow retargeting for real keys.
+    received = [];
+    r = await post('claude-opus-4-8', 'sk-ant-api03-real-window');
     check('passthrough reached the upstream', received.length === 1, `upstream saw ${received.length}`);
     check('full name kept: "claude-opus-4-8", not stripped to "opus-4-8"',
       received[0]?.model === 'claude-opus-4-8', `model=${received[0]?.model}`);
-    check('placeholder "proxy" key replaced by env ANTHROPIC_API_KEY',
-      received[0]?.apiKey === 'sk-ant-official-key', `got ${received[0]?.apiKey}`);
+    check('real client key forwarded untouched',
+      received[0]?.apiKey === 'sk-ant-api03-real-window', `got ${received[0]?.apiKey}`);
 
     console.log('\n── native passthrough: a real-looking client key is forwarded as-is ──');
     received = [];
