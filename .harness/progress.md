@@ -482,3 +482,9 @@ _Append-only. Newest at bottom. ISO8601 timestamps only._
 ## 2026-08-24T23:32:30-03:00 — handoff_ready: 0.2.1 收尾前同步
 - **touched**: .harness/handoff.md .harness/progress.md
 - **next**: git add -A && commit && push；Windows 构建；gh release create v0.2.1
+
+## 2026-08-25T01:00:00-03:00 — work: 0.2.2 tier-follow 双端构建发布（代理重启断点续跑）
+- **touched**: claude-proxy.js(tier-follow两层防御) config_writer.rs(哨兵env) test-claude-proxy.cjs(+4用例33项) release.sh(v0.2.2四处+Changes) Cargo.toml/package.json(bump 0.2.2)
+- **outcome**: Win exe VM构建完成拉回(SHA 503e77c6…)；dmg 手动bundle成功(SHA c170d489…)，卷内验证0.2.2+前端hash嵌入✓；已装/Applications；node测试33/33
+- **关键踩坑**: ①tauri bundle_dmg.sh 连续两次失败非偶发，手动绝对路径跑一次过 ②失败残留/Volumes/dmg.XXXX挂载点会累积，重跑前须detach ③代理重启杀ssh后台进程但VM侧构建存活，先查产物目录再重建
+- **next**: git 提交(feat源码+docs harness) → push → bash scripts/release.sh → gh release 验证

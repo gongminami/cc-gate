@@ -1,35 +1,33 @@
 # Harness Handoff
 
-_Last updated: 2026-08-23T17:57:00-03:00_
+_Last updated: 2026-08-25T01:00:00-03:00_
 
 ## Goal
 
-构建 CC-Gate — Tauri 2 + Vue 3 桌面应用，统一管理 10+ AI Agent 的模型/路由/Key/Shell。开源在 https://github.com/gongminami/cc-gate。当前 0.1.24 双端构建完成（未发布）：应用更新检查（GitHub Releases 提示式）+ 侧边栏菜单顺序调整 + 别名默认大模型修复。待用户决定发布。
+构建 CC-Gate — Tauri 2 + Vue 3 桌面应用，统一管理 10+ AI Agent 的模型/路由/Key/Shell。开源在 https://github.com/gongminami/cc-gate。当前 0.2.2 双端构建完成、已装本机：Claude Code 后台任务跟随窗口主模型（tier-follow 两层防御）。待提交 + push + Release。
 
 ## Context you must load
 
 - `CLAUDE.md` / `AGENTS.md`（项目根）
-- `src-tauri/src/model_catalog.rs` — fetch_latest_release（GitHub Releases API）+ AppUpdateInfo
-- `src-tauri/src/commands/config.rs` — check_app_update（版本比较）+ open_url（系统浏览器）
-- `src/composables/useAppUpdate.ts` — 全局更新状态（静默查/手动查/忽略版本，module-level 单例）
-- `src-tauri/src/config_writer.rs` — validate_alias_name（别名冲突检测=大小写敏感精确匹配）/ build_alias_routes / gen_aliases_impl
-- `src/components/PageHome.vue` — 更新提示条 + 检查更新按钮（首页）；`src/components/Sidebar.vue` — 版本号红点徽标
-- `claude-proxy.js` / `chat-proxy.js` — 「方案B」别名 token 路由
+- `claude-proxy.js` — tier-follow 核心：windowMainModel Map（约 702-717 行记录主模型）+ retarget（约 845-870 行，tier 形状请求重定向到主模型）
+- `src-tauri/src/config_writer.rs` — write_shell_aliases 内 claude-cc-gate 段的哨兵变量 claude-haiku-follows-main
+- `scripts/test-claude-proxy.cjs` — 33 项测试（含 4 个 tier-follow 用例），改 claude-proxy.js 必跑
+- `scripts/release.sh` — 发版脚本（版本四处硬编码已更新为 0.2.2）
 
 ## State snapshot
 
-- branch: main @ a3a0715（上一轮 catalog v4 已提交已 push）
-- 本轮未提交改动：更新检查功能（Rust 3 文件 + 前端 6 文件 + 新 composable）+ 别名默认大模型修复 + Sidebar 菜单顺序 + 版本 bump 0.1.22→0.1.24
-- 版本 0.1.24（Cargo.toml 单一来源 + package.json）；0.1.23/0.1.24 均已双端构建未发布，0.1.24 已装本机 /Applications（旧版备份 .bak-0.1.22/.bak-0.1.23）
-- Windows exe 在 ~/Downloads/CC-Gate_0.1.24_x64-setup.exe（SHA256 8cd513ad…163aa8）；Mac dmg 在 src-tauri/target/release/bundle/dmg/（SHA256 ad69d9ec…66c013）
+- branch: main @ origin/main 同步（4288798 docs README），本轮未提交改动 = 0.2.2 全部内容
+- 版本 0.2.2（Cargo.toml 单一来源 + package.json 元数据）
+- 双包就绪：dmg 在 src-tauri/target/release/bundle/dmg/CC-Gate_0.2.2_x64.dmg（SHA256 c170d489…72ed8）；exe 在 /tmp/CC-Gate_0.2.2_x64-setup.exe（SHA256 503e77c6…f232）
+- 已装本机 /Applications/CC-Gate.app 0.2.2（卷内验证 + 前端 hash 嵌入自检通过；旧版备份 .bak-20260825-004734 也是 0.2.2=断线前中间构建）
+- v0.2.1 Release 已发（2026-08-24，GitHub 上 Latest）；v0.2.2 未发
 
 ## What works
 
-- **应用更新检查**：启动 2.5s 后台静默查 GitHub Releases（api.github.com/gongminami/cc-gate/releases/latest，UA=cc-gate/update-check，8s 超时）；有新版 → Sidebar 版本号红点 + 首页提示条（去 GitHub 下载 / 忽略此版本 localStorage 记忆）；首页「检查更新」手动按钮 toast 反馈；模型按钮改名「模型目录更新」
-- **版本比较**：version_greater 数值分段比较（无 semver 依赖）；tag strip 前导 v；draft/prerelease 跳过
-- **别名默认大模型**：watch(modelsFor, immediate) 自动补第一个可用模型（修复配置异步到达时下拉框空着）
-- 别名大小写敏感：dsf 与 DSF 可并存（validate_alias_name 精确匹配），shell 原样写入
-- cargo check ✓ / npm run build ✓
+- **tier-follow（0.2.2 核心）**：后台任务（权限分类器/话题检测/标题生成）按官方 tier 名发的请求自动重定向到当前窗口主模型；中转站真名 claude-opus-5 有路由永不误判；sk- 开头真实 key 的官方窗口不劫持；冷启动非别名 token 回落 TOKEN_MAP/内置 deepseek-v4-pro
+- **哨兵变量**：统一命令四 tier env 钉 claude-haiku-follows-main，后台任务抢跑也被代理重定向，杜绝冷启动 401
+- node 测试 33/33 ✓；npm run build ✓（vue-tsc 零错误）；双端产物验证通过
+- 0.2.x 统一网关架构全量功能（见 git log 752b2c3）
 
 ## What's broken
 
@@ -38,8 +36,9 @@ _Last updated: 2026-08-23T17:57:00-03:00_
 
 ## Next actions
 
-1. （本次同步后）git 本地提交：feat（源码）+ docs(harness)（.harness/），**只本地不 push**（用户明确"本地同步加提交"）
-2. 发布与否待用户指令（release.sh 上线步骤；本次双端构建不含，0.1.24 已装本机验证）
+1. git 提交：feat（源码 6 文件）+ docs(harness)（.harness/）+ release.sh → push origin main
+2. bash scripts/release.sh 发 v0.2.2（先 push 再发版——tag 自动指向最新 commit 的铁律）
+3. gh release view v0.2.2 --repo gongminami/cc-gate 验证资产与 body
 
 ## Open questions
 
@@ -47,9 +46,10 @@ _Last updated: 2026-08-23T17:57:00-03:00_
 
 ## Beware
 
-- **仓库 URL 一律 gongminami/cc-gate**（旧 gongminami-pixel API 404）；本项目开源，正常发版需 push origin/main（本次用户只要本地提交，不 push）
-- **每次出包 bump 小版本**：0.1.23 已装本机后内容又变（菜单顺序）→ 已 bump 0.1.24；同号异容禁止
-- 更新检查是**提示式**：不自动更新不自动下载，只引导去 GitHub Releases（用户拍板方案：Releases API 做标记 + 启动静默查 + 徽标/提示条）
-- reqwest 未开 json feature：解析用 .text()+serde_json（model_catalog.rs 惯例）
-- Windows VM 构建：SSH 回收子进程 → 必须 schtasks 启动 + 日志轮询；构建目录必须全新（残留伪造 Cargo.toml 污染 include_str!）；macOS tauri build 必须前台跑
+- **仓库 URL 一律 gongminami/cc-gate**（旧 gongminami-pixel API 404）
+- **每次出包 bump 小版本**（Cargo.toml 单一来源）；同号异容禁止
+- **tauri bundle_dmg.sh 失败不再算偶发**（连续两撞）：手动绝对路径跑 bundle_dmg.sh 一次过；失败会在 /Volumes 积 dmg.XXXX 残留挂载点，重跑前必须 detach 干净
+- Windows VM 构建：代理重启会杀 Mac 侧 ssh 后台进程但 VM 侧构建存活——续跑先查 VM 产物目录再决定是否重建；VM 构建必须 schtasks 或接受 ssh 断线风险（本次 ssh 直跑侥幸存活）
+- deploy_proxy_scripts 覆盖磁盘调试 js：改 claude-proxy.js 必须重建才进 app
+- reqwest 未开 json feature：解析用 .text()+serde_json
 - mimo2codex 是外部编译二进制，本仓不可改
