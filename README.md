@@ -2,164 +2,115 @@
 
 **一个桌面应用，统一管理你所有 AI 编程工具的模型配置。**
 
----
-
-## 🆚 与 CC Switch 的最大区别
-
-两者的根本差异在于：**CC Switch 有"供应商"这个中间层**——你想用什么模型，取决于当前激活了哪个供应商。CC-Gate 没有供应商概念——所有厂商的模型平等地写在一起，代理按模型名自动路由。
-
-这个差异在 CLI 和桌面端表现为不同的体验：
-
-### CLI 模式
-
-| | CC Switch | CC-Gate |
-|---|---|---|
-| 多窗口并行 | ❌ 切到 DeepSeek 后，**所有终端**都只能用 DeepSeek | ✅ `codex-ds` 一个窗口、`codex-glm` 另一个窗口、`codex-mimo` 第三个窗口——**3 个终端 3 个模型同时跑，互不干扰** |
-| 怎么换模型 | 先切供应商，全局生效 | 换 alias = 换个终端窗口 |
-
-### 桌面端模式
-
-| | CC Switch | CC-Gate |
-|---|---|---|
-| 对话内切模型 | ❌ `/model` 只显示当前供应商的几个模型。想用跨厂商的？→ 退出桌面端 → 切供应商 → 重开 | ✅ `/model` 菜单里 DeepSeek、GLM、Qwen、MiMo **全部混排**，直接选，不需要退出重开 |
-| 模型列表 | 单厂商内部模型 | 所有厂商模型在一张列表里 |
-
-**CC Switch 是"先选店再点菜"，CC-Gate 是"所有菜在一张菜单上"。** 代理层自动识别模型名、自动路由到对应厂商——用户根本不需要知道"供应商"这个概念。
+v0.2 起进入「统一网关架构」：每个工具一条命令，打开就是全量模型列表——官方模型、直连厂商、中转站模型全部混排，切模型在工具内完成，不再需要为每个组合预制命令。
 
 ---
 
-## 解决的问题
-
-你有多个 AI 编程工具（Codex CLI、Codex 桌面端、Claude Code CLI、Claude Desktop、Hermes、OpenCode、OpenClaw、Aider、Cursor、Reasonix），每个都要配置模型。不同工具配置文件格式不同、位置不同、参数名不同——手动维护极易出错。
-
-CC-Gate 把所有这些集中到**一个 GUI** 里：
-
-- 图形化勾选哪些 Agent 用哪些模型
-- 每个模型选"直连"还是"走中转"
-- 22 个提供商的 API Key 统一管理
-- 3 个代理进程自动启停
-- Shell alias 自动注入（终端敲 `codex-ds` 直接开搞）
-- **远程模型目录自动更新**（厂商出新模型，不用重装软件）
-
-## 架构
+## 🚀 快速开始（三步）
 
 ```
- GUI (Tauri 2 + Vue 3)
-      │
-      ├─ 写配置文件 ──→ ~/.codex/config.toml
-      │                  ~/.codex/cc-switch-model-catalog.json
-      │                  ~/.claude/settings.json
-      │                  ~/.zshrc / ~/.bashrc
-      │                  ~/.hermes/config.yaml
-      │                  ~/.config/opencode/config.toml
-      │                  ~/.openclaw/openclaw.json
-      │
-      ├─ 管理代理进程 ──→ mimo2codex   (:8688, Responses API 翻译)
-      │                   claude-proxy (:8689, Anthropic→Chat 翻译)
-      │                   chat-proxy   (:8690, Chat Completions 透传)
-      │
-      └─ 模型目录 ──→ models-catalog.json (GitHub raw, 远程自动更新)
+① 添加 API Key 或中转站        → 「中转与API_Key」页
+② 点「发现模型」并挑选          → 中转站几百个模型一键导入，勾掉不要的
+③ 复制统一命令，终端里敲        → claude-cc-gate
 ```
 
-**核心思路：按 API 协议分组，不是按 Agent 分组。** 3 个代理端口覆盖全部 10 个 Agent，不存在 10 个端口。
+完成。Claude Code 里输入 `/model`——官方 Claude、DeepSeek、GLM、Qwen、Kimi、中转站模型全部在列，随时切换。
 
-## 功能
+## ⌨️ 五条统一命令
 
-### 🤖 Agent→模型 分���
+| 工具 | 命令 | 说明 |
+|------|------|------|
+| Claude Code | `claude-cc-gate` | /model 切换全部模型 |
+| Codex CLI | `codex-cc-gate` | 完整模型目录，Codex 内切换 |
+| Aider | `aider-cc-gate` | 以第一个启用模型启动 |
+| Hermes | `hermes-cc-gate` | `-m` 参数随时切模型 |
+| PI | `pi-cc-gate` | 全部启用模型自动写入其配置 |
 
-10 个 Agent，每个独立勾选可用模型。Codex Desktop 和 Codex CLI 可以选不同的模型集合。勾完点"应用"，所有配置文件一次性写入。
+裸命令（`claude` / `codex` / `aider`）保持官方原生直连，完全不受 CC-Gate 影响。
 
-### 🔀 模型路由
+## 🆚 与 CC Switch 的区别
 
-每个模型可选 **直连** 还是 **走中转站**。同一个 deepseek-v4-pro，Aider 可以直连、Codex CLI 可以走你的中转——互不干扰。
+**CC Switch 是"先选店再点菜"，CC-Gate 是"所有菜在一张菜单上"。**
 
-### 🔑 API Key 管理
+CC Switch 有"供应商"中间层：用什么模型取决于当前激活了哪个供应商，切换是全局的、要退出重开。CC-Gate 没有供应商概念——代理按模型名自动路由到对应厂商，所有工具共享一张全量菜单，多窗口可以同时跑不同厂商的模型。
 
-内置 22 个主流提供商的 API Key 管理。Key 写入 `~/.mimo2codex/.env`，代理运行时读取，不落明文在配置文件里。
+## 🌐 中转站模型发现
 
-### ⌨️ Shell 集成
+支持任何 OpenAI 兼容中转站（OpenRouter、商汤日日新、自建网关……）：
 
-自动在 `.zshrc` / `.bashrc` / PowerShell Profile 注入 alias：
+1. **添加**：填 URL 和 Key（内置 OpenRouter 预设）
+2. **发现**：一键拉取该站全部模型（OpenRouter 实测 400+），默认全选导入
+3. **挑选**：弹窗内搜索、按厂商分组批量勾选——只有勾选的才会出现在工具列表里
+4. **启停**：不续费的中转站一键隐藏，重新启用即恢复
 
-```bash
-codex-ds        # Codex CLI + DeepSeek V4 Pro
-codex-glm       # Codex CLI + GLM-5.2
-claude-ds       # Claude Code CLI + DeepSeek V4 Pro
-claude-mimo     # Claude Code CLI + MiMo V2.5 Pro
-aider-ds        # Aider + DeepSeek V4 Pro
-# ... 更多组合
-```
+发现的模型以 `OpenRouter/deepseek/deepseek-v3.2` 这样的带站名 ID 出现在所有工具里，一眼区分来源。
 
-### 🔧 工具检测
+## 📦 三类模型来源
 
-自动检测 Node.js、Python、Codex CLI、Claude Code CLI、Aider 是否已安装，显示版本号和安装指引。
+| 来源 | 进入方式 | 管理位置 |
+|------|---------|---------|
+| 官方目录 | 远端自动下发，厂商出新模型免重装 | 「模型管理」页检查更新 |
+| 中转站发现 | 一键拉取 + 挑选 | 「中转与API_Key」页 |
+| 自定义模型 | 手动添加小众平台 | 「模型管理」页 |
 
-### 🚀 启动项管理
+每个目录模型还可单独设置**线路**（官方直连或走某个中转站），对所有工具生效。
 
-3 个代理进程 + App 自身支持开机自启（macOS launchd）。
+## 🔧 更多功能
 
-### 📡 远程模型目录
+- **桌面端接入**：Codex Desktop / Claude Desktop 图形化配置写入与恢复备份
+- **高级别名**（可选）：把某个窗口锁死在一个来源上；同一模型多来源并行对比
+- **API Key 管理**：22 个提供商统一管理，Key 只写本地 `.env`
+- **应用更新检查**：启动时静默对比 GitHub Releases，有新版红点提醒
+- **系统代理兼容**：GitHub 访问自动走 macOS 系统代理
+- **热重载**：发现/挑选/改线路即时生效，无需重启代理或终端
+- **工具检测 / 启动项管理**：依赖检测、开机自启
 
-启动时自动从 GitHub 拉取最新模型列表。厂商出新模型（如 deepseek-v5），维护者只需更新 `models-catalog.json` 并 push，**所有用户自动获取**，不需要重装 CC-Gate。
+## ❓ 常见问题
 
-## 支持的 Agent
+**提示 Connection error？**
+`*-cc-gate` 命令的流量经过 CC-Gate 管理的本地代理（127.0.0.1:8688/8689/8690）。CC-Gate 必须保持运行（最小化即可），完全退出软件 = 断开路由。
 
-| Agent | 类型 | 代理端口 | 协议 |
-|-------|------|---------|------|
-| Codex CLI | CLI | :8688 | Responses API |
-| Codex Desktop | 桌面端 | :8688 | Responses API |
-| Codex Reasonix | CLI | :8688 | Responses API |
-| Claude Code CLI | CLI | :8689 | Anthropic Messages |
-| Claude Desktop | 桌面端 | :8689 | Anthropic Messages |
-| Hermes | CLI | :8690 | Chat Completions |
-| OpenCode | CLI | :8690 | Chat Completions |
-| OpenClaw | CLI | :8690 | Chat Completions |
-| Aider | CLI | :8690 | Chat Completions |
-| Cursor | CLI | :8690 | Chat Completions |
+**中转站的模型有的能用有的报错？**
+中转站目录里的模型 ≠ 都能用于 coding agent。常见限制：Anthropic/OpenAI 系大厂模型被平台 ToS 拦截、部分模型不支持工具调用消息角色（agent 必需）、部分模型需在平台上单独开通。用「挑选」只保留实测可用的即可。
 
-## 支持的模型（首批，持续更新中）
+**模型 ID 前面的 `OpenRouter/` 是什么？**
+中转站模型的显示 ID 带**站名前缀**，用于区分来源。转发时会自动剥掉前缀，不影响实际调用。
 
-| 模型 | 提供商 | 上下文 |
-|------|--------|--------|
-| DeepSeek V4 Pro | DeepSeek | 1M |
-| DeepSeek V4 Flash | DeepSeek | 1M |
-| GLM-5.2 | 智谱 AI | 1M |
-| Qwen3.8 Max Preview | 阿里云 | 1M |
-| Qwen-Max | 阿里云 | 128K |
-| MiMo V2.5 Pro | 小米 | 128K |
-| MiMo V2.5 | 小米 | 1M |
-| Claude Opus 5 | Anthropic | 1M |
-| GPT-5.6 | OpenAI | 1M |
+**官方 Claude 模型能直接用吗？**
+模型列表里会展示官方 Claude 全系。使用它们需要你已登录官方账号或配置官方 API Key（与第三方中转无关）。
 
-> 更多模型通过 `models-catalog.json` 远程更新，无需重装软件。
+**Windows 上能用吗？**
+可以，v0.2.1 提供双平台安装包，功能一致。
+
+## 支持的工具
+
+| 工具 | 类型 | 本地代理 | 接入方式 |
+|------|------|---------|---------|
+| Claude Code | CLI | :8689 网关发现 | `claude-cc-gate` |
+| Codex CLI | CLI | :8688 目录 | `codex-cc-gate` |
+| Aider | CLI | :8690 | `aider-cc-gate` |
+| Hermes | CLI | :8690 | `hermes-cc-gate` |
+| PI | CLI | :8690 配置写入 | `pi-cc-gate` |
+| Codex Desktop / Claude Desktop | 桌面端 | 同端口 | 图形化配置写入 |
 
 ## 安装
 
-### 下载安装包
-
-从 [Releases](../../releases) 页面下载最新版 `.dmg`（Mac）或 `.exe`（Windows）。
+从 [Releases](../../releases) 下载最新版 `.dmg`（Mac）或 `.exe`（Windows），拖入应用程序文件夹即可。软件内置更新检查，有新版会自动提醒。
 
 ### 从源码构建
-
-**前置要求：**
-- Node.js ≥ 20
-- Rust toolchain（`rustup`）
-- pnpm 或 npm
 
 ```bash
 git clone https://github.com/gongminami/cc-gate.git
 cd cc-gate
 npm install
-npx tauri build
+bash scripts/build-mac.sh   # macOS（含前端嵌入缓存修复）
 ```
-
-构建产物在 `src-tauri/target/release/bundle/`。
 
 ## 安全
 
-- API Key 存储在 `~/.mimo2codex/.env`，不会写入源码或配置文件
-- 代理监听 `127.0.0.1`，不接受外部连接
-- 用量记录默认关闭，需要时手动开启
+- API Key 存储在本地 `~/.mimo2codex/.env`，不落明文配置
+- 所有代理仅监听 `127.0.0.1`，不接受外部连接
+- 无遥测、无数据上传
 
 ## 许可证
 
@@ -167,8 +118,8 @@ MIT
 
 ## 致谢
 
-CC-Gate 的设计深受 [CC Switch](https://github.com/cexll/myclaude) 的启发。我们将"全局供应商切换"升级为 alias 级"多模型并行"——每个终端窗口独立选择模型，互不干扰。并扩展到了 10 个 Agent。
+设计深受 [CC Switch](https://github.com/cexll/myclaude) 启发——并将"全局供应商切换"推进到"统一网关 + 全量模型菜单"。
 
 ---
 
-**CC-Gate — 一个 GUI 管所有 AI 工具。**
+**CC-Gate — 一个 GUI 管所有 AI 工具，一条命令一个全量模型菜单。**
